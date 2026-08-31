@@ -187,15 +187,18 @@ opcion_menu = st.sidebar.radio(
     ["📊 Dashboard y Gráficos", "➕ Registrar Apuesta", "⚙️ Gestionar Historial"]
 )
 
-# Cargar apuestas globales
-df_raw = obtener_parleys()
-if not df_raw.empty and "Usuario" in df_raw.columns:
-    df_user = df_raw[df_raw["Usuario"].astype(str) == st.session_state.usuario_actual].copy()
-    if "Moneda" not in df_user.columns:
-        df_user["Moneda"] = "USD"
-    df_user["Moneda"] = df_user["Moneda"].replace("", "USD").fillna("USD")
-else:
-    df_user = pd.DataFrame(columns=["Usuario", "Fecha", "Deporte/Liga", "Seleccion", "Monto", "Cuota", "Estado", "Captura_URL", "Moneda"])
+# Función para refrescar la carga de datos en cada navegación
+def cargar_datos_usuario():
+    df_raw = obtener_parleys()
+    if not df_raw.empty and "Usuario" in df_raw.columns:
+        df_u = df_raw[df_raw["Usuario"].astype(str) == st.session_state.usuario_actual].copy()
+        if "Moneda" not in df_u.columns:
+            df_u["Moneda"] = "USD"
+        df_u["Moneda"] = df_u["Moneda"].replace("", "USD").fillna("USD")
+        return df_raw, df_u
+    return pd.DataFrame(), pd.DataFrame(columns=["Usuario", "Fecha", "Deporte/Liga", "Seleccion", "Monto", "Cuota", "Estado", "Captura_URL", "Moneda"])
+
+df_raw, df_user = cargar_datos_usuario()
 
 # --- 1. DASHBOARD Y GRÁFICOS ---
 if opcion_menu == "📊 Dashboard y Gráficos":
