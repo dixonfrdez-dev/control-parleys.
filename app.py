@@ -15,6 +15,17 @@ st.set_page_config(
     page_icon="⚽",
     layout="wide"
 )
+# --- OCULTAR ELEMENTOS FLOTANTES Y PIE DE PÁGINA ---
+ocultar_elementos_css = """
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    .stApp > header {display: none;}
+    button[title="View source"] {display: none;}
+    </style>
+"""
+st.markdown(ocultar_elementos_css, unsafe_allow_html=True)
 
 # --- CONEXIÓN A GOOGLE SHEETS ---
 @st.cache_resource
