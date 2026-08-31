@@ -77,14 +77,15 @@ def analizar_ticket_con_ia(imagen_pil):
             "estado": "Pendiente"
         }
         Reglas:
-        - "monto" y "cuota" deben ser números (floats).
+        - "monto" y "cuota" deben ser números (floats/decimales).
         - "moneda" debe ser "USD" si es en dólares ($) o "VES" si es en bolívares (Bs / Bs.D / VEF). Si no estás seguro, pon "USD".
         - "estado" debe ser una de estas opciones exactamente: "Pendiente", "Ganada", "Perdida".
         - Responde únicamente el formato JSON sin explicaciones adicionales.
         """
         
+        # Modelo actualizado a gemini-2.0-flash para evitar errores 404
         response = client.models.generate_content(
-            model='gemini-1.5-flash',
+            model='gemini-2.0-flash',
             contents=[imagen_pil, prompt]
         )
         
@@ -198,7 +199,6 @@ else:
 if opcion_menu == "📊 Dashboard y Gráficos":
     st.title("📊 Panel Estadístico y Balance")
 
-    # Filtro de Moneda para visualizar estadísticas
     moneda_filtro = st.radio("Selecciona Moneda a Visualizar:", ["USD ($)", "VES (Bs)"], horizontal=True)
     moneda_code = "USD" if "USD" in moneda_filtro else "VES"
     simbolo = "$" if moneda_code == "USD" else "Bs"
