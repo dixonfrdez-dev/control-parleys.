@@ -52,12 +52,18 @@ except Exception as e:
     st.error(f"Error de conexión con Google Sheets: {e}")
     st.stop()
 
-# --- FUNCIONES DE BASE DE DATOS CORREGIDAS ---
+# --- FUNCIONES DE BASE DE DATOS ---
+def obtener_usuarios():
+    records = sheet_users.get_all_records()
+    return pd.DataFrame(records)
+
+def registrar_usuario(user, pwd):
+    sheet_users.append_row([str(user).strip(), str(pwd).strip()])
+
 def obtener_parleys():
     records = sheet_parleys.get_all_records()
     df = pd.DataFrame(records)
     
-    # Si el DataFrame está vacío o le faltan columnas obligatorias, las creamos
     columnas_requeridas = ["Usuario", "Fecha", "Deporte/Liga", "Seleccion", "Monto", "Cuota", "Estado", "Captura_URL", "Moneda"]
     
     if df.empty:
@@ -74,13 +80,12 @@ def obtener_parleys():
             else:
                 df[col] = ""
 
-    # Conversión segura a números
     df["Monto"] = pd.to_numeric(df["Monto"], errors='coerce').fillna(0.0)
     df["Cuota"] = pd.to_numeric(df["Cuota"], errors='coerce').fillna(1.00)
     
     return df
+
 def agregar_parley(usuario, fecha, deporte, seleccion, monto, cuota, estado, captura_url="N/A", moneda="USD"):
-    # Insertar valores convertidos a cadenas/números limpios
     sheet_parleys.append_row([
         str(usuario),
         str(fecha),
@@ -198,7 +203,7 @@ opcion_menu = st.sidebar.radio(
     ["📊 Dashboard y Gráficos", "➕ Registrar Apuesta", "⚙️ Gestionar Historial"]
 )
 
-# Cargar apuestas en tiempo real
+# Cargar apuestas
 df_raw = obtener_parleys()
 if not df_raw.empty and "Usuario" in df_raw.columns:
     df_user = df_raw[df_raw["Usuario"].astype(str) == st.session_state.usuario_actual].copy()
@@ -269,7 +274,6 @@ if opcion_menu == "📊 Dashboard y Gráficos":
 elif opcion_menu == "➕ Registrar Apuesta":
     st.title("➕ Nueva Apuesta / Parley")
 
-    # Variables temporales fuera del form para no perder datos al cambiar el estado
     if "input_fecha" not in st.session_state:
         st.session_state.input_fecha = datetime.today().date()
     if "input_deporte" not in st.session_state:
@@ -307,7 +311,6 @@ elif opcion_menu == "➕ Registrar Apuesta":
                         st.success("¡Datos extraídos! Verifica los campos abajo.")
                         st.rerun()
 
-    # Formulario Directo
     with st.form("form_registro_parley"):
         col_f1, col_f2 = st.columns(2)
         with col_f1:
@@ -333,7 +336,6 @@ elif opcion_menu == "➕ Registrar Apuesta":
                 moneda_code = "VES" if "VES" in moneda_val else "USD"
                 cap_name = f"Captura: {captura_file.name}" if captura_file is not None else "N/A"
                 
-                # Insertar en Google Sheets
                 agregar_parley(
                     st.session_state.usuario_actual,
                     fecha_val.strftime("%Y-%m-%d"),
@@ -346,7 +348,6 @@ elif opcion_menu == "➕ Registrar Apuesta":
                     moneda_code
                 )
                 
-                # Reset de campos
                 st.session_state.input_deporte = ""
                 st.session_state.input_seleccion = ""
                 st.session_state.input_monto = 10.0
@@ -362,7 +363,6 @@ elif opcion_menu == "➕ Registrar Apuesta":
 elif opcion_menu == "⚙️ Gestionar Historial":
     st.title("⚙️ Editar o Eliminar Apuestas")
 
-    # Volver a consultar directamente de Google Sheets para evitar vacíos
     df_actual = obtener_parleys()
     if not df_actual.empty and "Usuario" in df_actual.columns:
         df_user_hist = df_actual[df_actual["Usuario"].astype(str) == st.session_state.usuario_actual].reset_index()
