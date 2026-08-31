@@ -1,400 +1,242 @@
-import streamlit as st
-import pandas as pd
-import hashlib
-import base64
+import sys
+import os
 from datetime import datetime
-from streamlit_gsheets import GSheetsConnection
 
-# --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(
-    page_title="Control de Parleys",
-    page_icon="⚽",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
+# Desactivar aceleraciones de hardware para estabilidad en Windows
+os.environ["NPY_DISABLE_CPU_FEATURES"] = "X86_V2,AVX2,FMA3"
+os.environ["STREAMLIT_WATCH_MODULES"] = "false"
 
-LISTA_DEPORTES = [
-    "Fútbol", 
-    "Béisbol (MLB)", 
-    "Baloncesto (NBA)", 
-    "Fútbol Americano (NFL)", 
-    "Tenis", 
-    "Combinado / Mixto", 
-    "Otro"
-]
-LISTA_MONEDAS = ["USD ($)", "VES (Bs.)"]
+import streamlit as st
+import gspread
 
-# --- FUNCIÓN PARA ENCRIPTAR CONTRASEÑAS (SHA-256) ---
-def encriptar_pass(password):
-    return hashlib.sha256(password.encode()).hexdigest()
+st.set_page_config(page_title="Control de Parleys", layout="wide", page_icon="⚽")
 
-# --- CONEXIÓN A GOOGLE SHEETS ---
-conn = st.connection("gsheets", type=GSheetsConnection)
+# Inicializar estados de sesión
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+if "usuario_actual" not in st.session_state:
+    st.session_state.usuario_actual = ""
 
-def cargar_usuarios():
+# Conexión nativa a Google Sheets
+@st.cache_resource
+def conectar_gsheets():
     try:
-        spreadsheet_id = st.secrets["spreadsheet_id"]
-        # Lee la pestaña "Usuarios"
-        df = conn.read(spreadsheet=spreadsheet_id, worksheet="Usuarios", ttl=0)
-        df = df.fillna("")
-        return df.to_dict(orient="records")
-    except Exception:
-        return []
-
-def guardar_usuarios(lista_usuarios):
-    try:
-        spreadsheet_id = st.secrets["spreadsheet_id"]
-        df = pd.DataFrame(lista_usuarios)
-        conn.update(spreadsheet=spreadsheet_id, worksheet="Usuarios", data=df)
-    except Exception as e:
-        st.error(f"Error al guardar usuario en Google Sheets: {e}")
-
-def cargar_parleys():
-    try:
-        spreadsheet_id = st.secrets["spreadsheet_id"]
-        # Lee la pestaña "Parleys"
-        df = conn.read(spreadsheet=spreadsheet_id, worksheet="Parleys", ttl=0)
-        df = df.fillna("")
-        datos = df.to_dict(orient="records")
-        for item in datos:
-            item["id"] = int(item["id"]) if item["id"] != "" else 0
-            item["monto"] = float(item["monto"]) if item["monto"] != "" else 0.0
-            item["cuota"] = float(item["cuota"]) if item["cuota"] != "" else 1.0
-            item["retorno"] = float(item["retorno"]) if item["retorno"] != "" else 0.0
-            item["neto"] = float(item["neto"]) if item["neto"] != "" else 0.0
-        return datos
-    except Exception:
-        return []
-
-def guardar_parleys(lista_parleys):
-    try:
-        spreadsheet_id = st.secrets["spreadsheet_id"]
-        df = pd.DataFrame(lista_parleys)
-        conn.update(spreadsheet=spreadsheet_id, worksheet="Parleys", data=df)
-    except Exception as e:
-        st.error(f"Error al guardar parleys en Google Sheets: {e}")
-
-def convertir_imagen_a_base64(uploaded_file):
-    if uploaded_file is not None:
-        bytes_data = uploaded_file.getvalue()
-        base64_str = base64.b64encode(bytes_data).decode('utf-8')
-        mime_type = uploaded_file.type
-        return f"data:{mime_type};base64,{base64_str}"
-    return ""
-
-# --- MANEJO DE SESIÓN DE AUTENTICACIÓN ---
-if "usuario_logueado" not in st.session_state:
-    st.session_state.usuario_logueado = None
-
-# --- PANTALLA DE INICIO DE SESIÓN / REGISTRO ---
-if st.session_state.usuario_logueado is None:
-    st.title("⚽ Control de Parleys Pro")
-    
-    tab_login, tab_registro = st.tabs(["🔑 Iniciar Sesión", "📝 Registrar Nuevo Usuario"])
-    
-    # 1. FORMULARIO DE LOGIN
-    with tab_login:
-        with st.form("form_login"):
-            usr_input = st.text_input("Nombre de Usuario").strip().lower()
-            pwd_input = st.text_input("Contraseña", type="password")
-            btn_login = st.form_submit_button("Ingresar", use_container_width=True)
+        cred_dict = dict(st.secrets["connections"]["gsheets"])
+        if "private_key" in cred_dict:
+            cred_dict["private_key"] = cred_dict["private_key"].replace("\\n", "\n")
             
-            if btn_login:
-                usuarios = cargar_usuarios()
-                pwd_hashed = encriptar_pass(pwd_input)
-                
-                # Validar usuario y contraseña
-                user_match = next((u for u in usuarios if str(u.get("usuario")).lower() == usr_input and str(u.get("password")) == pwd_hashed), None)
-                
-                if user_match:
-                    st.session_state.usuario_logueado = {
-                        "usuario": user_match["usuario"],
-                        "nombre": user_match["nombre"]
-                    }
-                    st.success(f"¡Bienvenido {user_match['nombre']}!")
-                    st.rerun()
-                else:
-                    st.error("Usuario o contraseña incorrectos.")
+        gc = gspread.service_account_from_dict(cred_dict)
+        sh = gc.open_by_url(cred_dict["spreadsheet"])
+        return sh
+    except Exception as e:
+        st.error(f"Error de conexión con Google Sheets: {e}")
+        return None
 
-    # 2. FORMULARIO DE REGISTRO
-    with tab_registro:
-        with st.form("form_registro"):
-            reg_nombre = st.text_input("Nombre Completo (ej: Carlos)")
-            reg_usr = st.text_input("Crea un Usuario (sin espacios)").strip().lower()
-            reg_pwd = st.text_input("Crea una Contraseña", type="password")
-            btn_registro = st.form_submit_button("Crear Cuenta", use_container_width=True)
-            
-            if btn_registro:
-                if not reg_nombre or not reg_usr or not reg_pwd:
-                    st.error("Por favor completa todos los campos.")
-                else:
-                    usuarios = cargar_usuarios()
-                    if any(str(u.get("usuario")).lower() == reg_usr for u in usuarios):
-                        st.error("Ese nombre de usuario ya existe. Elige otro.")
-                    else:
-                        nuevo_usuario = {
-                            "usuario": reg_usr,
-                            "password": encriptar_pass(reg_pwd),
-                            "nombre": reg_nombre
-                        }
-                        usuarios.append(nuevo_usuario)
-                        guardar_usuarios(usuarios)
-                        st.success("¡Cuenta creada exitosamente! Ahora puedes iniciar sesión.")
+sh = conectar_gsheets()
 
-    st.stop()  # Detiene la ejecución para que no cargue la app si no hay login
+# Función para obtener o crear una hoja específica
+def obtener_hoja(nombre_hoja, encabezados):
+    if not sh:
+        return None
+    try:
+        sheet = sh.worksheet(nombre_hoja)
+    except gspread.WorksheetNotFound:
+        sheet = sh.add_worksheet(title=nombre_hoja, rows="1000", cols="10")
+        sheet.append_row(encabezados)
+    return sheet
 
-# --- SI EL USUARIO YA INICIÓ SESIÓN ---
-user_actual = st.session_state.usuario_logueado
+sheet_usuarios = obtener_hoja("Usuarios", ["usuario", "clave"])
+sheet_parleys = obtener_hoja("Parleys", ["usuario", "fecha", "deporte", "descripcion", "monto", "cuota", "estado", "retorno"])
 
-# Cargar todos los parleys
-if "todos_los_parleys" not in st.session_state:
-    st.session_state.todos_los_parleys = cargar_parleys()
+# ==============================================================================
+# PANTALLA PRINCIPAL (SISTEMA DE CONTROL)
+# ==============================================================================
+if st.session_state.logged_in:
+    usuario_actual = st.session_state.usuario_actual
 
-todos_los_parleys = st.session_state.todos_los_parleys
-
-# FILTRAR SOLO LOS PARLEYS DEL USUARIO ACTUAL
-parleys_usuario = [p for p in todos_los_parleys if str(p.get("usuario")).lower() == str(user_actual["usuario"]).lower()]
-
-# BARRA LATERAL
-with st.sidebar:
-    st.write(f"👤 **{user_actual['nombre']}** (`{user_actual['usuario']}`)")
-    if st.button("🚪 Cerrar Sesión", use_container_width=True):
-        st.session_state.usuario_logueado = None
-        st.session_state.todos_los_parleys = None
-        st.rerun()
-    st.divider()
-    if st.button("🔄 Sincronizar", use_container_width=True):
-        st.session_state.todos_los_parleys = cargar_parleys()
-        st.success("Sincronizado")
+    # Barra lateral
+    st.sidebar.title("⚽ Control de Parleys")
+    st.sidebar.write(f"Usuario: **{usuario_actual}**")
+    
+    opcion_menu = st.sidebar.radio("Navegación", ["📊 Dashboard / Estadísticas", "➕ Registrar Apuesta", "📋 Historial de Jugadas"])
+    
+    if st.sidebar.button("Cerrar Sesión"):
+        st.session_state.logged_in = False
+        st.session_state.usuario_actual = ""
         st.rerun()
 
-st.title(f"⚽ Control de Parleys - {user_actual['nombre']}")
+    # Cargar datos del usuario
+    registros_usuario = []
+    if sheet_parleys:
+        try:
+            todas_filas = sheet_parleys.get_all_values()
+            if len(todas_filas) > 1:
+                for fila in todas_filas[1:]:
+                    if len(fila) >= 8 and fila[0].strip() == usuario_actual:
+                        registros_usuario.append({
+                            "fecha": fila[1],
+                            "deporte": fila[2],
+                            "descripcion": fila[3],
+                            "monto": float(fila[4]) if fila[4] else 0.0,
+                            "cuota": float(fila[5]) if fila[5] else 0.0,
+                            "estado": fila[6],
+                            "retorno": float(fila[7]) if fila[7] else 0.0
+                        })
+        except Exception as e:
+            st.error(f"Error al cargar historial: {e}")
 
-# --- FORMULARIO DE REGISTRO DE PARLEY ---
-with st.expander("➕ Registrar Nuevo Parley", expanded=True):
-    with st.form("form_parley", clear_on_submit=True):
-        col1, col2 = st.columns(2)
+    # --- OPCIÓN 1: DASHBOARD DE ESTADÍSTICAS ---
+    if opcion_menu == "📊 Dashboard / Estadísticas":
+        st.title(f"📊 Panel General - {usuario_actual}")
         
-        with col1:
-            fecha = st.text_input("Fecha (DD/MM/AAAA)", value=datetime.now().strftime("%d/%m/%Y"))
-            moneda = st.selectbox("Moneda", LISTA_MONEDAS)
-            deporte = st.selectbox("Deporte / Categoría", LISTA_DEPORTES)
-            desc = st.text_input("Descripción / Equipos", placeholder="Ej: Real Madrid + Dodgers")
+        total_apuestas = len(registros_usuario)
+        total_invertido = sum(r["monto"] for r in registros_usuario)
+        total_ganado = sum(r["retorno"] for r in registros_usuario if r["estado"] == "Ganado")
+        balance_neto = total_ganado - total_invertido
+        
+        ganadas = len([r for r in registros_usuario if r["estado"] == "Ganado"])
+        perdidas = len([r for r in registros_usuario if r["estado"] == "Perdido"])
+        pendientes = len([r for r in registros_usuario if r["estado"] == "Pendiente"])
+        
+        efectividad = (ganadas / (ganadas + perdidas) * 100) if (ganadas + perdidas) > 0 else 0.0
+
+        # Tarjetas de resumen
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Total Invertido", f"${total_invertido:.2f}")
+        col2.metric("Total Retorno", f"${total_ganado:.2f}")
+        col3.metric("Balance Neto", f"${balance_neto:.2f}", delta=f"{balance_neto:.2f}")
+        col4.metric("Efectividad", f"{efectividad:.1f}%")
+
+        st.markdown("---")
+        
+        st.subheader("📈 Resumen de Resultados")
+        c1, c2, c3 = st.columns(3)
+        c1.info(f"🟢 **Ganadas:** {ganadas}")
+        c2.error(f"🔴 **Perdidas:** {perdidas}")
+        c3.warning(f"🟡 **Pendientes:** {pendientes}")
+
+    # --- OPCIÓN 2: REGISTRAR APUESTA ---
+    elif opcion_menu == "➕ Registrar Apuesta":
+        st.title("➕ Registrar Nuevo Parley / Jugada")
+        
+        with st.form("form_parley"):
+            fecha = st.date_input("Fecha de la jugada", datetime.now())
+            deporte = st.selectbox("Deporte / Liga", ["Fútbol", "Béisbol (MLB)", "Baloncesto (NBA)", "NFL", "Tenis", "Otro"])
+            descripcion = st.text_area("Detalle de los logros (Ej: Real Madrid a ganar + Over 2.5 goles)")
             
-        with col2:
-            monto = st.number_input("Monto Invertido", min_value=0.0, step=1.0, format="%.2f")
-            cuota = st.number_input("Cuota Total", min_value=1.0, step=0.05, format="%.2f")
-            estado = st.selectbox("Estado", ["Pendiente", "Ganado", "Perdido", "Cobrado"])
-            cashout = st.number_input("Monto Cashout (Opcional)", min_value=0.0, step=1.0, format="%.2f", help="Solo si seleccionas 'Cobrado'")
-
-        imagen_adjunta = st.file_uploader("Adjuntar captura / ticket (Opcional):", type=["png", "jpg", "jpeg", "webp"])
-        btn_guardar = st.form_submit_button("Guardar Parley", use_container_width=True)
-
-        if btn_guardar:
-            if not desc:
-                st.error("Por favor ingresa la descripción o los equipos del parley.")
-            elif monto <= 0:
-                st.error("El monto debe ser mayor a 0.")
-            else:
-                retorno = 0.0
-                if estado == "Ganado":
-                    retorno = monto * cuota
-                elif estado == "Cobrado":
-                    retorno = cashout
-                elif estado == "Perdido":
-                    retorno = 0.0
-
-                neto = retorno - monto if estado != "Pendiente" else 0.0
-                imagen_b64 = convertir_imagen_a_base64(imagen_adjunta)
-
-                nuevo_id = max([p["id"] for p in todos_los_parleys], default=0) + 1
-
-                nuevo_item = {
-                    "id": nuevo_id,
-                    "fecha": fecha,
-                    "moneda": moneda,
-                    "deporte": deporte,
-                    "desc": desc,
-                    "monto": monto,
-                    "cuota": cuota,
-                    "estado": estado,
-                    "retorno": retorno,
-                    "neto": neto,
-                    "imagen": imagen_b64,
-                    "usuario": user_actual["usuario"]  # Se asigna únicamente al usuario actual
-                }
-
-                st.session_state.todos_los_parleys.append(nuevo_item)
-                guardar_parleys(st.session_state.todos_los_parleys)
-                st.success("¡Parley registrado con éxito!")
-                st.rerun()
-
-# --- RESUMEN Y MÉTRICAS ---
-if parleys_usuario:
-    datos_usd = [p for p in parleys_usuario if p.get("moneda", "USD ($)") == "USD ($)"]
-    datos_ves = [p for p in parleys_usuario if p.get("moneda") == "VES (Bs.)"]
-
-    st.subheader("📊 Tus Métricas Generales")
-    t1, t2 = st.tabs(["Dólares (USD)", "Bolívares (VES)"])
-    
-    with t1:
-        if datos_usd:
-            inv_usd = sum(p["monto"] for p in datos_usd if p["estado"] != "Pendiente")
-            ret_usd = sum(p["retorno"] for p in datos_usd if p["estado"] != "Pendiente")
-            neto_usd = ret_usd - inv_usd
-            roi_usd = (neto_usd / inv_usd * 100) if inv_usd > 0 else 0.0
-
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Registros (USD)", len(datos_usd))
-            m2.metric("Invertido", f"${inv_usd:.2f}")
-            m3.metric("Retornado", f"${ret_usd:.2f}")
-            m4.metric("Balance Neto", f"${neto_usd:+.2f}", delta=f"{roi_usd:+.2f}% ROI")
-        else:
-            st.info("No tienes registros en Dólares aún.")
-
-    with t2:
-        if datos_ves:
-            inv_ves = sum(p["monto"] for p in datos_ves if p["estado"] != "Pendiente")
-            ret_ves = sum(p["retorno"] for p in datos_ves if p["estado"] != "Pendiente")
-            neto_ves = ret_ves - inv_ves
-            roi_ves = (neto_ves / inv_ves * 100) if inv_ves > 0 else 0.0
-
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Registros (VES)", len(datos_ves))
-            m2.metric("Invertido", f"Bs. {inv_ves:.2f}")
-            m3.metric("Retornado", f"Bs. {ret_ves:.2f}")
-            m4.metric("Balance Neto", f"Bs. {neto_ves:+.2f}", delta=f"{roi_ves:+.2f}% ROI")
-        else:
-            st.info("No tienes registros en Bolívares aún.")
-
-    # --- RENDIMIENTO POR DEPORTE ---
-    with st.expander("🏆 Tu Rendimiento por Deporte", expanded=False):
-        deportes_presentes = list(set(p.get("deporte", "Sin Deporte") for p in parleys_usuario))
-        tabla_deportes = []
-        for dep in deportes_presentes:
-            items_dep = [p for p in parleys_usuario if p.get("deporte", "Sin Deporte") == dep]
-            cerrados = [p for p in items_dep if p["estado"] != "Pendiente"]
-            total_reg = len(items_dep)
-            ganados = sum(1 for p in cerrados if p["estado"] in ["Ganado", "Cobrado"])
-            efectividad = (ganados / len(cerrados) * 100) if len(cerrados) > 0 else 0.0
-
-            tabla_deportes.append({
-                "Deporte / Categoría": dep,
-                "Total Jugados": total_reg,
-                "Finalizados": len(cerrados),
-                "Ganados / Cobrados": ganados,
-                "% Efectividad": f"{efectividad:.1f}%"
-            })
-        st.table(tabla_deportes)
-
-    st.divider()
-
-    # --- FILTROS Y HISTORIAL ---
-    st.subheader("🔍 Filtrar Mis Registros")
-    f_col1, f_col2, f_col3, f_col4 = st.columns(4)
-    
-    with f_col1:
-        filtro_moneda = st.selectbox("Filtrar Moneda:", ["Todas"] + LISTA_MONEDAS)
-    with f_col2:
-        filtro_estado = st.selectbox("Filtrar Estado:", ["Todos", "Pendiente", "Ganado", "Perdido", "Cobrado"])
-    with f_col3:
-        filtro_deporte = st.selectbox("Filtrar Deporte:", ["Todos"] + LISTA_DEPORTES)
-    with f_col4:
-        busqueda_texto = st.text_input("Buscar equipo:", placeholder="Ej: Real Madrid")
-
-    datos_filtrados = parleys_usuario
-    if filtro_moneda != "Todas":
-        datos_filtrados = [p for p in datos_filtrados if p.get("moneda", "USD ($)") == filtro_moneda]
-    if filtro_estado != "Todos":
-        datos_filtrados = [p for p in datos_filtrados if p["estado"] == filtro_estado]
-    if filtro_deporte != "Todos":
-        datos_filtrados = [p for p in datos_filtrados if p.get("deporte") == filtro_deporte]
-    if busqueda_texto:
-        datos_filtrados = [p for p in datos_filtrados if busqueda_texto.lower() in p["desc"].lower()]
-
-    st.markdown(f"**Mostrando {len(datos_filtrados)} de {len(parleys_usuario)} registros:**")
-    
-    tabla_display = []
-    for p in datos_filtrados:
-        moneda_actual = p.get("moneda", "USD ($)")
-        simbolo = "$" if moneda_actual == "USD ($)" else "Bs."
-
-        tabla_display.append({
-            "ID": p["id"],
-            "Fecha": p["fecha"],
-            "Deporte": p.get("deporte", "N/A"),
-            "Descripción": p["desc"],
-            "Monto": f"{simbolo} {p['monto']:.2f}",
-            "Cuota": f"{p['cuota']:.2f}",
-            "Estado": p["estado"],
-            "Retorno": f"{simbolo} {p['retorno']:.2f}",
-            "Neto": f"{simbolo} {p['neto']:+.2f}",
-            "Ticket": "📸 Sí" if p.get("imagen") else "❌ No"
-        })
-
-    if tabla_display:
-        st.table(tabla_display)
-    else:
-        st.warning("No se encontraron registros.")
-
-    # --- EDITAR O ELIMINAR REGISTRO ---
-    with st.expander("⚙️ Ver Ticket o Modificar Registro"):
-        listado_ids = [p["id"] for p in datos_filtrados]
-        if listado_ids:
-            id_sel = st.selectbox("Selecciona el ID del Parley para ver o editar:", listado_ids)
-            parley_sel = next((p for p in todos_los_parleys if p["id"] == id_sel and str(p.get("usuario")).lower() == str(user_actual["usuario"]).lower()), None)
+            col_m, col_c, col_e = st.columns(3)
+            monto = col_m.number_input("Monto apostado ($)", min_value=0.5, value=5.0, step=0.5)
+            cuota = col_c.number_input("Cuota / Logro total", min_value=1.01, value=2.00, step=0.1)
+            estado = col_e.selectbox("Estado inicial", ["Pendiente", "Ganado", "Perdido"])
             
-            if parley_sel:
-                col_info, col_img = st.columns([1, 1])
-
-                with col_info:
-                    moneda_actual = parley_sel.get("moneda", "USD ($)")
-                    simb = "$" if moneda_actual == "USD ($)" else "Bs."
-
-                    st.markdown(f"**Detalles del Parley #{parley_sel['id']}**")
-                    st.write(f"**Fecha:** {parley_sel['fecha']}")
-                    st.write(f"**Apuesta:** {parley_sel['desc']}")
-                    st.write(f"**Monto:** {simb} {parley_sel['monto']:.2f} | **Cuota:** {parley_sel['cuota']:.2f}")
+            retorno_estimado = monto * cuota
+            st.caption(f"💡 **Posible ganancia total:** ${retorno_estimado:.2f}")
+            
+            btn_guardar = st.form_submit_button("Guardar Apuesta")
+            
+            if btn_guardar:
+                if descripcion.strip():
+                    retorno_final = retorno_estimado if estado == "Ganado" else (0.0 if estado == "Perdido" else 0.0)
+                    nueva_fila = [
+                        usuario_actual,
+                        str(fecha),
+                        deporte,
+                        descripcion.strip(),
+                        str(monto),
+                        str(cuota),
+                        estado,
+                        str(retorno_final)
+                    ]
                     
-                    nuevo_dep = st.selectbox("Actualizar Deporte:", LISTA_DEPORTES, index=LISTA_DEPORTES.index(parley_sel.get("deporte", "Fútbol")) if parley_sel.get("deporte") in LISTA_DEPORTES else 0)
-                    nuevo_est = st.selectbox("Actualizar Estado:", ["Pendiente", "Ganado", "Perdido", "Cobrado"], index=["Pendiente", "Ganado", "Perdido", "Cobrado"].index(parley_sel["estado"]))
-                    
-                    nuevo_cashout = 0.0
-                    if nuevo_est == "Cobrado":
-                        nuevo_cashout = st.number_input("Monto Cashout:", value=float(parley_sel["retorno"]))
+                    try:
+                        sheet_parleys.append_row(nueva_fila)
+                        st.success("¡Apuesta registrada con éxito!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error al guardar en Google Sheets: {e}")
+                else:
+                    st.warning("Por favor agrega una descripción o detalle a tu jugada.")
 
-                    c_act, c_elim = st.columns(2)
-                    with c_act:
-                        if st.button("Actualizar", use_container_width=True):
-                            ret = 0.0
-                            if nuevo_est == "Ganado":
-                                ret = parley_sel["monto"] * parley_sel["cuota"]
-                            elif nuevo_est == "Cobrado":
-                                ret = nuevo_cashout
-                            elif nuevo_est == "Perdido":
-                                ret = 0.0
+    # --- OPCIÓN 3: HISTORIAL DE JUGADAS ---
+    elif opcion_menu == "📋 Historial de Jugadas":
+        st.title("📋 Historial de Parleys")
+        
+        if registros_usuario:
+            st.dataframe(registros_usuario, use_container_width=True)
+        else:
+            st.info("Aún no has registrado ninguna jugada. Dirígete a '➕ Registrar Apuesta' para añadir la primera.")
 
-                            parley_sel["deporte"] = nuevo_dep
-                            parley_sel["estado"] = nuevo_est
-                            parley_sel["retorno"] = ret
-                            parley_sel["neto"] = ret - parley_sel["monto"] if nuevo_est != "Pendiente" else 0.0
-                            
-                            guardar_parleys(st.session_state.todos_los_parleys)
-                            st.success("Actualizado con éxito.")
-                            st.rerun()
-
-                    with c_elim:
-                        if st.button("Eliminar", type="primary", use_container_width=True):
-                            st.session_state.todos_los_parleys = [p for p in todos_los_parleys if p["id"] != id_sel]
-                            guardar_parleys(st.session_state.todos_los_parleys)
-                            st.warning("Registro eliminado.")
-                            st.rerun()
-
-                with col_img:
-                    st.markdown("**Captura del Ticket:**")
-                    if parley_sel.get("imagen"):
-                        st.image(parley_sel["imagen"], use_column_width=True, caption=f"Ticket Parley #{parley_sel['id']}")
-                    else:
-                        st.info("Este registro no tiene ninguna captura adjunta.")
+# ==============================================================================
+# PANTALLA DE AUTENTICACIÓN (LOGIN Y REGISTRO)
+# ==============================================================================
 else:
-    st.info("No tienes registros guardados aún. Agrega tu primer parley arriba.")
+    st.title("⚽ Control de Parleys")
+    st.subheader("Registro / Inicio de Sesión")
+    
+    tab1, tab2 = st.tabs(["Iniciar Sesión", "Registrarse"])
+
+    # ----------------- TAB 1: INICIAR SESIÓN -----------------
+    with tab1:
+        st.subheader("Login")
+        usuario = st.text_input("Usuario", key="login_user")
+        clave = st.text_input("Contraseña", type="password", key="login_pass")
+        
+        if st.button("Ingresar"):
+            if usuario and clave:
+                if sheet_usuarios:
+                    try:
+                        filas = sheet_usuarios.get_all_values()
+                        if len(filas) > 1:
+                            usr_input = str(usuario).strip()
+                            pass_input = str(clave).strip()
+                            usuario_encontrado = False
+                            
+                            for fila in filas[1:]:
+                                if len(fila) >= 2:
+                                    if str(fila[0]).strip() == usr_input:
+                                        usuario_encontrado = True
+                                        if str(fila[1]).strip() == pass_input:
+                                            st.session_state.logged_in = True
+                                            st.session_state.usuario_actual = usr_input
+                                            st.rerun()
+                                        else:
+                                            st.error("Contraseña incorrecta.")
+                                        break
+                            if not usuario_encontrado:
+                                st.error("El usuario no existe.")
+                        else:
+                            st.error("La base de datos de usuarios está vacía.")
+                    except Exception as e:
+                        st.error(f"Error al leer la hoja: {e}")
+            else:
+                st.warning("Por favor ingresa usuario y contraseña.")
+
+    # ----------------- TAB 2: REGISTRO -----------------
+    with tab2:
+        st.subheader("Registro de nuevo usuario")
+        nuevo_usuario = st.text_input("Nuevo Usuario", key="reg_user")
+        nueva_clave = st.text_input("Nueva Contraseña", type="password", key="reg_pass")
+        
+        if st.button("Crear cuenta"):
+            if nuevo_usuario and nueva_clave:
+                if sheet_usuarios:
+                    try:
+                        filas = sheet_usuarios.get_all_values()
+                        usr_nuevo = str(nuevo_usuario).strip()
+                        pass_nueva = str(nueva_clave).strip()
+                        
+                        registrados = [str(f[0]).strip() for f in filas[1:] if len(f) > 0] if len(filas) > 1 else []
+                        
+                        if usr_nuevo in registrados:
+                            st.warning("El nombre de usuario ya existe.")
+                        else:
+                            sheet_usuarios.append_row([usr_nuevo, pass_nueva])
+                            st.success("¡Cuenta creada exitosamente! Ya puedes iniciar sesión.")
+                    except Exception as e:
+                        st.error(f"Error al registrar: {e}")
+            else:
+                st.warning("Por favor completa todos los campos.")
+
+
+     
+               
