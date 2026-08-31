@@ -15,7 +15,8 @@ st.set_page_config(
     page_icon="⚽",
     layout="wide"
 )
-# --- OCULTAR ELEMENTOS FLOTANTES Y PIE DE PÁGINA ---
+
+# --- OCULTAR ELEMENTOS FLOTANTES DE STREAMLIT DE LA PANTALLA ---
 ocultar_elementos_css = """
     <style>
     #MainMenu {visibility: hidden;}
@@ -23,6 +24,7 @@ ocultar_elementos_css = """
     header {visibility: hidden;}
     .stApp > header {display: none;}
     button[title="View source"] {display: none;}
+    footer:after {content:''; display:none;}
     </style>
 """
 st.markdown(ocultar_elementos_css, unsafe_allow_html=True)
@@ -115,7 +117,7 @@ def actualizar_estado_apuesta(row_index, nuevo_estado):
 def eliminar_apuesta(row_index):
     sheet_parleys.delete_rows(row_index)
 
-# --- ANALIZADOR DE IA CON MANEJO DE ERROR 503 ---
+# --- ANALIZADOR DE IA CON GEMINI (CON MANEJO DE ERROR 503) ---
 def analizar_ticket_con_ia(imagen_pil):
     api_key = st.secrets.get("GEMINI_API_KEY", "")
     if not api_key:
@@ -152,10 +154,11 @@ def analizar_ticket_con_ia(imagen_pil):
     except Exception as e:
         err_str = str(e)
         if "503" in err_str or "UNAVAILABLE" in err_str:
-            st.warning("⏳ El servidor de IA está muy ocupado en este momento. Espera 10 segundos y vuelve a presionar 'Escanear Ticket', o ingresa los datos manualmente.")
+            st.warning("⏳ El servidor de IA está saturado en este momento. Espera unos segundos y vuelve a presionar 'Escanear Ticket', o ingresa los datos manualmente.")
         else:
             st.error(f"Error al procesar la imagen: {e}")
         return None
+
 # --- GESTIÓN DE SESIÓN ---
 if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
