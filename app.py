@@ -1,6 +1,6 @@
 import sys
 import os
-from datetime import datetime
+from datetime import datetime, date
 import streamlit as st
 import pandas as pd
 import gspread
@@ -66,21 +66,24 @@ def analizar_ticket_con_ia(imagen_pil):
     try:
         client = genai.Client(api_key=api_key)
         prompt = """
-        Analiza esta imagen de un ticket o captura de apuesta deportiva/parley.
-        Extrae la información requerida y responde EXCLUSIVAMENTE con un objeto JSON valido con la siguiente estructura:
+        Analiza detenidamente esta imagen de un ticket o captura de apuesta deportiva/parley.
+        Extrae la información exacta y responde EXCLUSIVAMENTE con un objeto JSON válido con la siguiente estructura:
         {
+            "fecha": "YYYY-MM-DD",
             "deporte_liga": "Ej: MLB / Champions League / NBA / Fútbol",
-            "seleccion": "Ej: Real Madrid ML + Yankees Gana (resumen de los logros/juegos)",
-            "monto": 10.0,
-            "cuota": 2.50,
+            "seleccion": "Ej: Real Madrid ML + Yankees Gana",
+            "monto": 10.00,
+            "cuota": 2.55,
             "moneda": "USD",
             "estado": "Pendiente"
         }
-        Reglas:
-        - "monto" y "cuota" deben ser números (floats/decimales).
-        - "moneda" debe ser "USD" si es en dólares ($) o "VES" si es en bolívares (Bs / Bs.D / VEF). Si no estás seguro, pon "USD".
-        - "estado" debe ser una de estas opciones exactamente: "Pendiente", "Ganada", "Perdida".
-        - Responde únicamente el formato JSON sin explicaciones adicionales.
+        Reglas estrictas:
+        - "cuota": Debe ser EL VALOR EXACTO mostrado en el ticket con todos sus decimales (ejemplo: 2.37, 1.95, 4.12). NO redondees bajo ninguna circunstancia.
+        - "monto": Debe ser el valor numérico apostado exacto con decimales si los tiene.
+        - "fecha": Extrae la fecha exacta de jugada o creación del ticket en formato YYYY-MM-DD si es visible en la imagen. Si no aparece fecha clara en la imagen, pon null.
+        - "moneda": "USD" si es en dólares ($) o "VES" si es en bolívares (Bs / Bs.D / VEF). Si no estás seguro, pon "USD".
+        - "estado": Debe ser estrictamente una de estas opciones: "Pendiente", "Ganada", "Perdida".
+        - Responde únicamente el texto JSON limpio sin explicaciones ni formato markdown de código.
         """
         
         response = client.models.generate_content(
@@ -275,6 +278,8 @@ if opcion_menu == "📊 Dashboard y Gráficos":
 elif opcion_menu == "➕ Registrar Apuesta":
     st.title("➕ Nueva Apuesta / Parley")
 
+    if "auto_fecha" not in st.session_state:
+        st.session_state.auto_fecha = datetime.today().date()
     if "auto_deporte" not in st.session_state:
         st.session_state.auto_deporte = ""
     if "auto_seleccion" not in st.session_state:
@@ -296,20 +301,30 @@ elif opcion_menu == "➕ Registrar Apuesta":
                     img = Image.open(captura_file)
                     datos = analizar_ticket_con_ia(img)
                     if datos:
+                        # Extraer fecha si la IA la encontró
+                        if datos.get("fecha"):
+                            try:
+                                st.session_state.auto_fecha = datetime.strptime(datos.get("fecha"), "%Y-%m-%d").date()
+                            except Exception:
+                                st.session_state.auto_fecha = datetime.today().date()
+                        else:
+                            st.session_state.auto_fecha = datetime.today().date()
+
                         st.session_state.auto_deporte = datos.get("deporte_liga", "")
                         st.session_state.auto_seleccion = datos.get("seleccion", "")
                         st.session_state.auto_monto = float(datos.get("monto", 10.0))
                         st.session_state.auto_cuota = float(datos.get("cuota", 2.00))
                         st.session_state.auto_estado = datos.get("estado", "Pendiente")
-                        st.session_state.auto_moneda = datos.get("moneda", "USD").upper()
-                        st.success(f"¡Campos extraídos automáticamente! Moneda detectada: {st.session_state.auto_moneda}")
+                        st.session_state.auto_moneda = str(datos.get("moneda", "USD")).upper()
+                        
+                        st.success(f"¡Datos extraídos! Cuota: {st.session_state.auto_cuota} | Moneda: {st.session_state.auto_moneda}")
                         st.rerun()
 
     with st.form("form_nueva_apuesta"):
         col_f1, col_f2 = st.columns(2)
         
         with col_f1:
-            fecha = st.date_input("Fecha de la Jugada", value=datetime.today().date())
+            fecha = st.date_input("Fecha de la Jugada", value=st.session_state.auto_fecha)
             deporte = st.text_input("Deporte / Liga", value=st.session_state.auto_deporte, placeholder="Ej. MLB, Champions League, NBA")
             seleccion = st.text_area("Selección / Logros", value=st.session_state.auto_seleccion, placeholder="Ej. Real Madrid Gana + Yankees ML")
         
@@ -319,8 +334,8 @@ elif opcion_menu == "➕ Registrar Apuesta":
             moneda_sel = st.selectbox("Moneda", opciones_moneda, index=idx_mon)
             moneda_final = "USD" if "USD" in moneda_sel else "VES"
 
-            monto = st.number_input("Monto Apostado", min_value=0.1, step=1.0, value=st.session_state.auto_monto)
-            cuota = st.number_input("Cuota / Logro Total", min_value=1.01, step=0.05, value=st.session_state.auto_cuota)
+            monto = st.number_input("Monto Apostado", min_value=0.01, step=1.0, value=st.session_state.auto_monto, format="%.2f")
+            cuota = st.number_input("Cuota / Logro Total", min_value=1.01, step=0.01, value=st.session_state.auto_cuota, format="%.2f")
             
             opciones_estado = ["Pendiente", "Ganada", "Perdida"]
             idx_est = opciones_estado.index(st.session_state.auto_estado) if st.session_state.auto_estado in opciones_estado else 0
@@ -332,6 +347,7 @@ elif opcion_menu == "➕ Registrar Apuesta":
             if deporte and seleccion:
                 captura_nombre = f"Imagen: {captura_file.name}" if captura_file is not None else "N/A"
                 
+                # Guardar fila en Google Sheets
                 agregar_parley(
                     st.session_state.usuario_actual,
                     fecha.strftime("%Y-%m-%d"),
@@ -344,6 +360,8 @@ elif opcion_menu == "➕ Registrar Apuesta":
                     moneda_final
                 )
                 
+                # Resetear campos en session_state
+                st.session_state.auto_fecha = datetime.today().date()
                 st.session_state.auto_deporte = ""
                 st.session_state.auto_seleccion = ""
                 st.session_state.auto_monto = 10.0
@@ -351,7 +369,10 @@ elif opcion_menu == "➕ Registrar Apuesta":
                 st.session_state.auto_estado = "Pendiente"
                 st.session_state.auto_moneda = "USD"
                 
-                st.success(f"¡Apuesta registrada exitosamente ({moneda_final})!")
+                # Forzar la recarga de la base de datos eliminando el caché
+                st.cache_resource.clear()
+                
+                st.success(f"¡Apuesta registrada exitosamente en Google Sheets ({moneda_final})!")
                 st.rerun()
             else:
                 st.warning("Por favor completa el deporte y los logros de la jugada.")
@@ -381,6 +402,7 @@ elif opcion_menu == "⚙️ Gestionar Historial":
             nuevo_est = st.radio("Nuevo Estado:", ["Ganada", "Perdida", "Pendiente"])
             if st.button("Guardar Nuevo Estado"):
                 actualizar_estado_apuesta(row_target, nuevo_est)
+                st.cache_resource.clear()
                 st.success("Estado actualizado.")
                 st.rerun()
 
@@ -389,6 +411,7 @@ elif opcion_menu == "⚙️ Gestionar Historial":
             st.write("Esta acción borrará el registro de tu hoja de cálculo.")
             if st.button("🔴 Eliminar Definitivamente"):
                 eliminar_apuesta(row_target)
+                st.cache_resource.clear()
                 st.success("Apuesta eliminada.")
                 st.rerun()
     else:
