@@ -83,7 +83,6 @@ def analizar_ticket_con_ia(imagen_pil):
         - Responde únicamente el formato JSON sin explicaciones adicionales.
         """
         
-        # Modelo actualizado a gemini-2.0-flash para evitar errores 404
         response = client.models.generate_content(
             model='gemini-3.6-flash',
             contents=[imagen_pil, prompt]
@@ -310,7 +309,7 @@ elif opcion_menu == "➕ Registrar Apuesta":
         col_f1, col_f2 = st.columns(2)
         
         with col_f1:
-            fecha = st.date_input("Fecha de la Jugada", datetime.now())
+            fecha = st.date_input("Fecha de la Jugada", value=datetime.today().date())
             deporte = st.text_input("Deporte / Liga", value=st.session_state.auto_deporte, placeholder="Ej. MLB, Champions League, NBA")
             seleccion = st.text_area("Selección / Logros", value=st.session_state.auto_seleccion, placeholder="Ej. Real Madrid Gana + Yankees ML")
         
@@ -335,7 +334,7 @@ elif opcion_menu == "➕ Registrar Apuesta":
                 
                 agregar_parley(
                     st.session_state.usuario_actual,
-                    fecha,
+                    fecha.strftime("%Y-%m-%d"),
                     deporte,
                     seleccion,
                     monto,
@@ -344,7 +343,6 @@ elif opcion_menu == "➕ Registrar Apuesta":
                     captura_nombre,
                     moneda_final
                 )
-                st.success(f"¡Apuesta registrada exitosamente en Google Sheets ({moneda_final})!")
                 
                 st.session_state.auto_deporte = ""
                 st.session_state.auto_seleccion = ""
@@ -352,6 +350,8 @@ elif opcion_menu == "➕ Registrar Apuesta":
                 st.session_state.auto_cuota = 2.00
                 st.session_state.auto_estado = "Pendiente"
                 st.session_state.auto_moneda = "USD"
+                
+                st.success(f"¡Apuesta registrada exitosamente ({moneda_final})!")
                 st.rerun()
             else:
                 st.warning("Por favor completa el deporte y los logros de la jugada.")
