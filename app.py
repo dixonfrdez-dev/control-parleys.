@@ -1,61 +1,92 @@
-import sys
-import os
-from datetime import datetime
 import streamlit as st
+from streamlit_gsheets import GSheetsConnection
 import pandas as pd
-import gspread
-from google.oauth2.service_account import Credentials
-import plotly.express as px
+from datetime import datetime
+from google import genai
 from PIL import Image
 import json
 
-# --- INTELIGENCIA ARTIFICIAL (GEMINI) PARA LEER TICKETS ---
-try:
-    from google import genai
-    from google.genai import types
-    GEMINI_AVAILABLE = True
-except ImportError:
-    GEMINI_AVAILABLE = False
-
-# --- CONFIGURACIÓN DE PÁGINA ---
+# ---------------------------------------------------------
+# Configuración de la Página
+# ---------------------------------------------------------
 st.set_page_config(
-    page_title="Sistema de Control de Parleys",
+    page_title="Control de Parleys",
     page_icon="⚽",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# --- CONEXIÓN A GOOGLE SHEETS ---
-@st.cache_resource
-def get_gspread_client():
-    creds_dict = st.secrets["connections"]["gsheets"]
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
-    credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    client = gspread.authorize(credentials)
-    url = creds_dict["spreadsheet"]
-    sh = client.open_by_url(url)
-    return sh
+# ---------------------------------------------------------
+# Sistema de Autenticación de Usuarios
+# ---------------------------------------------------------
+# Si deseas cambiar o agregar usuarios, puedes hacerlo aquí
+USUARIOS = {
+    "admin": "1234",
+    "parley": "parley2026"
+}
 
-try:
-    sh = get_gspread_client()
-    try:
-        sheet_users = sh.worksheet("Usuarios")
-    except Exception:
-        sheet_users = sh.add_worksheet(title="Usuarios", rows="100", cols="5")
-        sheet_users.append_row(["usuario", "clave"])
+def login():
+    st.title("🔐 Inicio de Sesión - Control de Parleys")
+    
+    with st.form("form_login"):
+        usuario = st.text_input("Usuario")
+        password = st.text_input("Contraseña", type="password")
+        submit = st.form_submit_button("Ingresar")
+        
+        if submit:
+            if usuario in USUARIOS and USUARIOS[usuario] == password:
+                st.session_state["autenticado"] = True
+                st.session_state["usuario_actual"] = usuario
+                st.success(f"¡Bienvenido, {usuario}!")
+                st.rerun()
+            else:
+                st.error("Usuario o contraseña incorrectos.")
 
-    try:
-        sheet_parleys = sh.worksheet("Parleys")
-    except Exception:
-        sheet_parleys = sh.add_worksheet(title="Parleys", rows="1000", cols="10")
-        sheet_parleys.append_row(["Usuario", "Fecha", "Deporte/Liga", "Seleccion", "Monto", "Cuota", "Estado", "Captura_URL", "Moneda"])
-except Exception as e:
-    st.error(f"Error de conexión con Google Sheets: {e}")
+if "autenticado" not in st.session_state:
+    st.session_state["autenticado"] = False
+
+if not st.session_state["autenticado"]:
+    login()
     st.stop()
 
-# --- FUNCIONES DE LECTURA DE CAPTURAS CON IA ---
+# ---------------------------------------------------------
+# Barra Lateral (Sidebar)
+# ---------------------------------------------------------
+st.sidebar.title(f"👤 {st.session_state.get('usuario_actual', 'Usuario')}")
+if st.sidebar.button("Cerrar Sesión"):
+    st.session_state["autenticado"] = False
+    st.rerun()
+
+st.sidebar.divider()
+
+# ---------------------------------------------------------
+# Conexión a Google Sheets
+# ---------------------------------------------------------
+try:
+    conn = st.connection("gsheets", type=GSheetsConnection)
+except Exception as e:
+    st.error(f"Error al conectar con Google Sheets: {e}")
+
+def cargar_datos():
+    try:
+        df = conn.read(ttl="0s")
+        if df.empty:
+            return pd.DataFrame(columns=[
+                "Fecha", "Deporte/Liga", "Selección", "Monto", "Cuota", 
+                "Ganancia Potencial", "Moneda", "Estado", "Retorno"
+            ])
+        return df
+    except Exception:
+        return pd.DataFrame(columns=[
+            "Fecha", "Deporte/Liga", "Selección", "Monto", "Cuota", 
+            "Ganancia Potencial", "Moneda", "Estado", "Retorno"
+        ])
+
+df_apuestas = cargar_datos()
+
+# ---------------------------------------------------------
+# Función para procesar tickets con IA (Gemini 1.5 Flash)
+# ---------------------------------------------------------
 def analizar_ticket_con_ia(imagen_pil):
     """Extrae los datos de la captura del parley utilizando Gemini."""
     api_key = st.secrets.get("GEMINI_API_KEY", "")
@@ -67,7 +98,7 @@ def analizar_ticket_con_ia(imagen_pil):
         client = genai.Client(api_key=api_key)
         prompt = """
         Analiza esta imagen de un ticket o captura de apuesta deportiva/parley.
-        Extrae la información requerida y responde EXCLUSIVAMENTE con un objeto JSON valido con la siguiente estructura:
+        Extrae la información requerida y responde EXCLUSIVAMENTE con un objeto JSON válido con la siguiente estructura:
         {
             "deporte_liga": "Ej: MLB / Champions League / NBA / Fútbol",
             "seleccion": "Ej: Real Madrid ML + Yankees Gana (resumen de los logros/juegos)",
@@ -77,14 +108,15 @@ def analizar_ticket_con_ia(imagen_pil):
             "estado": "Pendiente"
         }
         Reglas:
-        - "monto" y "cuota" deben ser números (floats).
-        - "moneda" debe ser "USD" si es en dólares ($) o "VES" si es en bolívares (Bs / Bs.D / VEF). Si no estás seguro, pon "USD".
+        - "monto" y "cuota" deben ser números (floats/decimales).
+        - "moneda" debe ser "USD" si es en dólares ($) o "VES" si es en bolívares (Bs / Bs.D). Si no estás seguro, usa "USD".
         - "estado" debe ser una de estas opciones exactamente: "Pendiente", "Ganada", "Perdida".
-        - Responde únicamente el formato JSON sin explicaciones adicionales.
+        - Responde únicamente el texto JSON limpio, sin bloques de código ni explicaciones adicionales.
         """
         
+        # Uso del modelo gemini-1.5-flash
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-1.5-flash',
             contents=[imagen_pil, prompt]
         )
         
@@ -99,297 +131,140 @@ def analizar_ticket_con_ia(imagen_pil):
         st.error(f"Error al procesar la imagen con IA: {e}")
         return None
 
-# --- FUNCIONES DE BASE DE DATOS ---
-def obtener_usuarios():
-    records = sheet_users.get_all_records()
-    return pd.DataFrame(records)
+# ---------------------------------------------------------
+# Interfaz Principal
+# ---------------------------------------------------------
+st.title("⚽ Dashboard & Control de Parleys")
 
-def registrar_usuario(user, pwd):
-    sheet_users.append_row([user.strip(), pwd.strip()])
+# Inicializar estado para autocompletar campos con IA
+if "datos_ia" not in st.session_state:
+    st.session_state.datos_ia = {}
 
-def obtener_parleys():
-    records = sheet_parleys.get_all_records()
-    df = pd.DataFrame(records)
-    if not df.empty and "Moneda" not in df.columns:
-        df["Moneda"] = "USD"
-    return df
-
-def agregar_parley(usuario, fecha, deporte, seleccion, monto, cuota, estado, captura_url="N/A", moneda="USD"):
-    sheet_parleys.append_row([usuario, str(fecha), deporte, seleccion, float(monto), float(cuota), estado, captura_url, moneda])
-
-def actualizar_estado_apuesta(row_index, nuevo_estado):
-    sheet_parleys.update_cell(row_index, 7, nuevo_estado)
-
-def eliminar_apuesta(row_index):
-    sheet_parleys.delete_rows(row_index)
-
-# --- GESTIÓN DE SESIÓN ---
-if "autenticado" not in st.session_state:
-    st.session_state.autenticado = False
-if "usuario_actual" not in st.session_state:
-    st.session_state.usuario_actual = ""
-
-# --- PANTALLA DE LOGIN / REGISTRO ---
-if not st.session_state.autenticado:
-    st.title("⚽ Control de Parleys y Apuestas")
-    tab_login, tab_registro = st.tabs(["🔐 Iniciar Sesión", "📝 Registrarse"])
-
-    with tab_login:
-        with st.form("form_login"):
-            u_input = st.text_input("Usuario").strip()
-            p_input = st.text_input("Contraseña", type="password").strip()
-            btn_login = st.form_submit_button("Ingresar")
-
-            if btn_login:
-                df_u = obtener_usuarios()
-                if not df_u.empty and "usuario" in df_u.columns and "clave" in df_u.columns:
-                    user_match = df_u[(df_u["usuario"].astype(str) == u_input) & (df_u["clave"].astype(str) == p_input)]
-                    if not user_match.empty:
-                        st.session_state.autenticado = True
-                        st.session_state.usuario_actual = u_input
-                        st.success("¡Bienvenido!")
-                        st.rerun()
-                    else:
-                        st.error("Usuario o contraseña incorrectos.")
-                else:
-                    st.error("No hay usuarios registrados aún.")
-
-    with tab_registro:
-        with st.form("form_reg"):
-            nu_input = st.text_input("Nuevo Usuario").strip()
-            np_input = st.text_input("Nueva Contraseña", type="password").strip()
-            btn_reg = st.form_submit_button("Crear cuenta")
-
-            if btn_reg:
-                if nu_input and np_input:
-                    df_u = obtener_usuarios()
-                    if not df_u.empty and "usuario" in df_u.columns and nu_input in df_u["usuario"].astype(str).values:
-                        st.error("El usuario ya existe. Elige otro nombre.")
-                    else:
-                        registrar_usuario(nu_input, np_input)
-                        st.success("¡Cuenta creada con éxito! Ahora inicia sesión.")
-                else:
-                    st.warning("Por favor completa todos los campos.")
-    st.stop()
-
-# --- MENÚ LATERAL ---
-st.sidebar.write(f"👤 **Usuario:** `{st.session_state.usuario_actual}`")
-if st.sidebar.button("Cerrar Sesión"):
-    st.session_state.autenticado = False
-    st.session_state.usuario_actual = ""
-    st.rerun()
-
-opcion_menu = st.sidebar.radio(
-    "Menú de Navegación",
-    ["📊 Dashboard y Gráficos", "➕ Registrar Apuesta", "⚙️ Gestionar Historial"]
-)
-
-# Cargar apuestas globales
-df_raw = obtener_parleys()
-if not df_raw.empty and "Usuario" in df_raw.columns:
-    df_user = df_raw[df_raw["Usuario"].astype(str) == st.session_state.usuario_actual].copy()
-    if "Moneda" not in df_user.columns:
-        df_user["Moneda"] = "USD"
-    df_user["Moneda"] = df_user["Moneda"].replace("", "USD").fillna("USD")
-else:
-    df_user = pd.DataFrame(columns=["Usuario", "Fecha", "Deporte/Liga", "Seleccion", "Monto", "Cuota", "Estado", "Captura_URL", "Moneda"])
-
-# --- 1. DASHBOARD Y GRÁFICOS ---
-if opcion_menu == "📊 Dashboard y Gráficos":
-    st.title("📊 Panel Estadístico y Balance")
-
-    # Filtro de Moneda para visualizar estadísticas
-    moneda_filtro = st.radio("Selecciona Moneda a Visualizar:", ["USD ($)", "VES (Bs)"], horizontal=True)
-    moneda_code = "USD" if "USD" in moneda_filtro else "VES"
-    simbolo = "$" if moneda_code == "USD" else "Bs"
-
-    df_filtered = df_user[df_user["Moneda"] == moneda_code].copy() if not df_user.empty else pd.DataFrame()
+# Métricas Principales
+if not df_apuestas.empty and "Monto" in df_apuestas.columns:
+    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
     
-    if not df_filtered.empty:
-        total_jugadas = len(df_filtered)
-        df_ganadas = df_filtered[df_filtered["Estado"] == "Ganada"]
-        df_perdidas = df_filtered[df_filtered["Estado"] == "Perdida"]
+    total_apuestas = len(df_apuestas)
+    total_invertido = pd.to_numeric(df_apuestas["Monto"], errors="coerce").sum()
+    
+    ganadas = df_apuestas[df_apuestas["Estado"] == "Ganada"]
+    perdidas = df_apuestas[df_apuestas["Estado"] == "Perdida"]
+    pendientes = df_apuestas[df_apuestas["Estado"] == "Pendiente"]
+    
+    total_retorno = pd.to_numeric(df_apuestas["Retorno"], errors="coerce").sum()
+    balance_neto = total_retorno - total_invertido
+    
+    col_m1.metric("Total Jugadas", total_apuestas)
+    col_m2.metric("Total Invertido", f"${total_invertido:.2f}")
+    col_m3.metric("Balance Neto", f"${balance_neto:.2f}", delta=f"{balance_neto:.2f}")
+    col_m4.metric("Pendientes", len(pendientes))
+    
+st.divider()
 
-        total_apostado = df_filtered["Monto"].astype(float).sum()
-        
-        def calc_lucro(row):
-            e = str(row["Estado"]).strip().capitalize()
-            m = float(row.get("Monto", 0))
-            c = float(row.get("Cuota", 1))
-            if e == "Ganada":
-                return (m * c) - m
-            elif e == "Perdida":
-                return -m
-            return 0
+# ---------------------------------------------------------
+# Sección: Registrar Nueva Apuesta
+# ---------------------------------------------------------
+st.header("📝 Nueva Apuesta / Parley")
 
-        df_filtered["Lucro"] = df_filtered.apply(calc_lucro, axis=1)
-        balance_total = df_filtered["Lucro"].sum()
+with st.expander("👁️ Escanear captura con IA para autocompletar campos"):
+    archivo_subido = st.file_uploader("Sube la foto/captura de tu ticket", type=["jpg", "jpeg", "png"])
+    if archivo_subido is not None:
+        if st.button("🔍 Escanear y Extraer Datos"):
+            with st.spinner("Analizando ticket con Gemini..."):
+                imagen = Image.open(archivo_subido)
+                datos = analizar_ticket_con_ia(imagen)
+                if datos:
+                    st.session_state.datos_ia = datos
+                    st.success("¡Datos extraídos con éxito! Revisa los campos abajo.")
 
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total Jugadas", total_jugadas)
-        col2.metric(f"Apostado ({moneda_code})", f"{simbolo} {total_apostado:,.2f}")
-        col3.metric(f"Balance Net ({moneda_code})", f"{simbolo} {balance_total:,.2f}", delta=f"{balance_total:,.2f}")
-        
-        win_rate = (len(df_ganadas) / total_jugadas * 100) if total_jugadas > 0 else 0
-        col4.metric("% Efectividad", f"{win_rate:.1f}%")
+# Formulario de registro
+with st.form("form_apuesta", clear_on_submit=True):
+    col_f1, col_f2 = st.columns(2)
+    
+    with col_f1:
+        fecha = st.date_input("Fecha de la Jugada", datetime.now())
+        deporte = st.text_input(
+            "Deporte / Liga", 
+            value=st.session_state.datos_ia.get("deporte_liga", ""),
+            placeholder="Ej. MLB, Champions League, NBA"
+        )
+    
+    with col_f2:
+        moneda = st.selectbox(
+            "Moneda", 
+            ["USD", "VES"], 
+            index=0 if st.session_state.datos_ia.get("moneda") != "VES" else 1
+        )
+        estado = st.selectbox(
+            "Estado Inicial", 
+            ["Pendiente", "Ganada", "Perdida"],
+            index=["Pendiente", "Ganada", "Perdida"].index(st.session_state.datos_ia.get("estado", "Pendiente")) if st.session_state.datos_ia.get("estado") in ["Pendiente", "Ganada", "Perdida"] else 0
+        )
 
-        st.divider()
+    seleccion = st.text_area(
+        "Selección / Logros", 
+        value=st.session_state.datos_ia.get("seleccion", ""),
+        placeholder="Ej. Real Madrid Gana + Yankees ML"
+    )
 
-        col_g1, col_g2 = st.columns(2)
+    col_m1, col_m2 = st.columns(2)
+    with col_m1:
+        monto = st.number_input(
+            "Monto Apostado", 
+            min_value=0.0, 
+            step=1.0, 
+            value=float(st.session_state.datos_ia.get("monto", 0.0))
+        )
+    with col_m2:
+        cuota = st.number_input(
+            "Cuota / Logro Total", 
+            min_value=1.0, 
+            step=0.05, 
+            value=float(st.session_state.datos_ia.get("cuota", 1.0))
+        )
 
-        with col_g1:
-            df_chart = df_filtered.copy()
-            df_chart["Acumulado"] = df_chart["Lucro"].cumsum()
-            fig_line = px.line(
-                df_chart,
-                y="Acumulado",
-                markers=True,
-                title=f"📈 Evolución del Balance ({simbolo})",
-                labels={"Acumulado": f"Balance ({simbolo})", "index": "N° de Apuesta"},
-                template="plotly_dark"
-            )
-            fig_line.update_traces(line_color="#00CC96", line_width=3)
-            st.plotly_chart(fig_line, use_container_width=True)
+    ganancia_potencial = round(monto * cuota, 2)
+    st.info(f"💡 **Ganancia Potencial estimada:** {ganancia_potencial} {moneda}")
 
-        with col_g2:
-            df_estado = df_filtered["Estado"].value_counts().reset_index()
-            df_estado.columns = ["Estado", "Cantidad"]
-            fig_pie = px.pie(
-                df_estado,
-                names="Estado",
-                values="Cantidad",
-                title="🍩 Distribución de Resultados",
-                color="Estado",
-                color_discrete_map={"Ganada": "#00CC96", "Perdida": "#EF553B", "Pendiente": "#FECB52"},
-                hole=0.4,
-                template="plotly_dark"
-            )
-            st.plotly_chart(fig_pie, use_container_width=True)
+    boton_guardar = st.form_submit_button("💾 Guardar Apuesta")
 
-        st.subheader(f"📋 Historial de Jugadas en {moneda_code}")
-        st.dataframe(df_filtered.drop(columns=["Usuario"]), use_container_width=True)
+    if boton_guardar:
+        if monto <= 0:
+            st.warning("El monto apostado debe ser mayor a 0.")
+        elif not seleccion.strip():
+            st.warning("Escribe la selección o los logros de la jugada.")
+        else:
+            retorno = 0.0
+            if estado == "Ganada":
+                retorno = ganancia_potencial
+            elif estado == "Perdida":
+                retorno = 0.0
 
-    else:
-        st.info(f"No tienes apuestas registradas en {moneda_code}. Ve a '➕ Registrar Apuesta' para agregar una.")
+            nueva_fila = pd.DataFrame([{
+                "Fecha": fecha.strftime("%Y-%m-%d"),
+                "Deporte/Liga": deporte,
+                "Selección": seleccion,
+                "Monto": monto,
+                "Cuota": cuota,
+                "Ganancia Potencial": ganancia_potencial,
+                "Moneda": moneda,
+                "Estado": estado,
+                "Retorno": retorno
+            }])
 
-# --- 2. REGISTRAR APUESTA ---
-elif opcion_menu == "➕ Registrar Apuesta":
-    st.title("➕ Nueva Apuesta / Parley")
+            df_actualizado = pd.concat([df_apuestas, nueva_fila], ignore_index=True)
+            conn.update(data=df_actualizado)
+            st.session_state.datos_ia = {}
+            st.success("¡Apuesta registrada exitosamente!")
+            st.rerun()
 
-    if "auto_deporte" not in st.session_state:
-        st.session_state.auto_deporte = ""
-    if "auto_seleccion" not in st.session_state:
-        st.session_state.auto_seleccion = ""
-    if "auto_monto" not in st.session_state:
-        st.session_state.auto_monto = 10.0
-    if "auto_cuota" not in st.session_state:
-        st.session_state.auto_cuota = 2.00
-    if "auto_estado" not in st.session_state:
-        st.session_state.auto_estado = "Pendiente"
-    if "auto_moneda" not in st.session_state:
-        st.session_state.auto_moneda = "USD"
+# ---------------------------------------------------------
+# Sección: Historial de Apuestas
+# ---------------------------------------------------------
+st.divider()
+st.header("📊 Historial de Apuestas Registradas")
 
-    with st.expander("🤖 Escanear captura con IA para autocompletar campos", expanded=True):
-        captura_file = st.file_uploader("Sube la foto/captura de tu ticket", type=["png", "jpg", "jpeg"])
-        if captura_file is not None:
-            if st.button("🔍 Escanear y Extraer Datos"):
-                with st.spinner("Analizando la imagen con IA..."):
-                    img = Image.open(captura_file)
-                    datos = analizar_ticket_con_ia(img)
-                    if datos:
-                        st.session_state.auto_deporte = datos.get("deporte_liga", "")
-                        st.session_state.auto_seleccion = datos.get("seleccion", "")
-                        st.session_state.auto_monto = float(datos.get("monto", 10.0))
-                        st.session_state.auto_cuota = float(datos.get("cuota", 2.00))
-                        st.session_state.auto_estado = datos.get("estado", "Pendiente")
-                        st.session_state.auto_moneda = datos.get("moneda", "USD").upper()
-                        st.success(f"¡Campos extraídos automáticamente! Moneda detectada: {st.session_state.auto_moneda}")
-                        st.rerun()
-
-    with st.form("form_nueva_apuesta"):
-        col_f1, col_f2 = st.columns(2)
-        
-        with col_f1:
-            fecha = st.date_input("Fecha de la Jugada", datetime.now())
-            deporte = st.text_input("Deporte / Liga", value=st.session_state.auto_deporte, placeholder="Ej. MLB, Champions League, NBA")
-            seleccion = st.text_area("Selección / Logros", value=st.session_state.auto_seleccion, placeholder="Ej. Real Madrid Gana + Yankees ML")
-        
-        with col_f2:
-            opciones_moneda = ["USD ($)", "VES (Bs)"]
-            idx_mon = 0 if st.session_state.auto_moneda == "USD" else 1
-            moneda_sel = st.selectbox("Moneda", opciones_moneda, index=idx_mon)
-            moneda_final = "USD" if "USD" in moneda_sel else "VES"
-
-            monto = st.number_input("Monto Apostado", min_value=0.1, step=1.0, value=st.session_state.auto_monto)
-            cuota = st.number_input("Cuota / Logro Total", min_value=1.01, step=0.05, value=st.session_state.auto_cuota)
-            
-            opciones_estado = ["Pendiente", "Ganada", "Perdida"]
-            idx_est = opciones_estado.index(st.session_state.auto_estado) if st.session_state.auto_estado in opciones_estado else 0
-            estado = st.selectbox("Estado Inicial", opciones_estado, index=idx_est)
-
-        btn_guardar = st.form_submit_button("💾 Guardar Apuesta")
-
-        if btn_guardar:
-            if deporte and seleccion:
-                captura_nombre = f"Imagen: {captura_file.name}" if captura_file is not None else "N/A"
-                
-                agregar_parley(
-                    st.session_state.usuario_actual,
-                    fecha,
-                    deporte,
-                    seleccion,
-                    monto,
-                    cuota,
-                    estado,
-                    captura_nombre,
-                    moneda_final
-                )
-                st.success(f"¡Apuesta registrada exitosamente en Google Sheets ({moneda_final})!")
-                
-                st.session_state.auto_deporte = ""
-                st.session_state.auto_seleccion = ""
-                st.session_state.auto_monto = 10.0
-                st.session_state.auto_cuota = 2.00
-                st.session_state.auto_estado = "Pendiente"
-                st.session_state.auto_moneda = "USD"
-                st.rerun()
-            else:
-                st.warning("Por favor completa el deporte y los logros de la jugada.")
-
-# --- 3. GESTIONAR HISTORIAL ---
-elif opcion_menu == "⚙️ Gestionar Historial":
-    st.title("⚙️ Editar o Eliminar Apuestas")
-
-    if not df_user.empty:
-        df_raw_reset = df_raw.reset_index()
-        df_user_indexed = df_raw_reset[df_raw_reset["Usuario"].astype(str) == st.session_state.usuario_actual]
-
-        opciones = {}
-        for idx, row in df_user_indexed.iterrows():
-            sheet_row_num = int(row["index"]) + 2
-            mon_sym = "$" if str(row.get('Moneda', 'USD')) == "USD" else "Bs"
-            label = f"Fila #{sheet_row_num} | {row.get('Fecha')} - {row.get('Deporte/Liga')} ({mon_sym}{row.get('Monto')}) [{row.get('Estado')}]"
-            opciones[label] = sheet_row_num
-
-        apuesta_sel = st.selectbox("Selecciona la apuesta a modificar:", options=list(opciones.keys()))
-        row_target = opciones[apuesta_sel]
-
-        col_act1, col_act2 = st.columns(2)
-
-        with col_act1:
-            st.subheader("✏️ Actualizar Estado")
-            nuevo_est = st.radio("Nuevo Estado:", ["Ganada", "Perdida", "Pendiente"])
-            if st.button("Guardar Nuevo Estado"):
-                actualizar_estado_apuesta(row_target, nuevo_est)
-                st.success("Estado actualizado.")
-                st.rerun()
-
-        with col_act2:
-            st.subheader("🗑️ Eliminar Apuesta")
-            st.write("Esta acción borrará el registro de tu hoja de cálculo.")
-            if st.button("🔴 Eliminar Definitivamente"):
-                eliminar_apuesta(row_target)
-                st.success("Apuesta eliminada.")
-                st.rerun()
-    else:
-        st.info("No tienes apuestas en el historial para modificar.")
+if not df_apuestas.empty:
+    st.dataframe(df_apuestas, use_container_width=True)
+else:
+    st.info("No hay apuestas registradas aún en la hoja de cálculo.")
