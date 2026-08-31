@@ -104,7 +104,7 @@ def actualizar_estado_apuesta(row_index, nuevo_estado):
 def eliminar_apuesta(row_index):
     sheet_parleys.delete_rows(row_index)
 
-# --- ANALIZADOR DE IA CON GEMINI ---
+# --- ANALIZADOR DE IA CON MANEJO DE ERROR 503 ---
 def analizar_ticket_con_ia(imagen_pil):
     api_key = st.secrets.get("GEMINI_API_KEY", "")
     if not api_key:
@@ -120,7 +120,7 @@ def analizar_ticket_con_ia(imagen_pil):
         {
             "fecha": "YYYY-MM-DD",
             "deporte_liga": "Ej. MLB / Béisbol",
-            "seleccion": "Ej. Brewers vs Rangers Under 8.5 + NY Yankees ML + BAL Orioles ML + PHI Phillies -1.5",
+            "seleccion": "Ej. Logro 1 + Logro 2",
             "monto": 500.0,
             "cuota": 8.90,
             "moneda": "VES",
@@ -139,9 +139,12 @@ def analizar_ticket_con_ia(imagen_pil):
         txt = response.text.strip().replace("```json", "").replace("```", "").strip()
         return json.loads(txt)
     except Exception as e:
-        st.error(f"Error al procesar imagen con IA: {e}")
+        err_str = str(e)
+        if "503" in err_str or "UNAVAILABLE" in err_str:
+            st.warning("⏳ El servidor de IA está muy ocupado en este momento. Espera 10 segundos y vuelve a presionar 'Escanear Ticket', o ingresa los datos manualmente.")
+        else:
+            st.error(f"Error al procesar la imagen: {e}")
         return None
-
 # --- GESTIÓN DE SESIÓN ---
 if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
