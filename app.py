@@ -16,15 +16,12 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- OCULTAR ELEMENTOS FLOTANTES DE STREAMLIT DE LA PANTALLA ---
+# --- CSS SEGURO (MANTIENE LA BARRA LATERAL VISIBLE EN MÓVILES) ---
 ocultar_elementos_css = """
     <style>
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-    .stApp > header {display: none;}
-    button[title="View source"] {display: none;}
-    footer:after {content:''; display:none;}
+    footer {visibility: hidden !important;}
+    button[title="View source"] {display: none !important;}
+    .viewerBadge_container__1tB2o {display: none !important;}
     </style>
 """
 st.markdown(ocultar_elementos_css, unsafe_allow_html=True)
@@ -117,7 +114,7 @@ def actualizar_estado_apuesta(row_index, nuevo_estado):
 def eliminar_apuesta(row_index):
     sheet_parleys.delete_rows(row_index)
 
-# --- ANALIZADOR DE IA CON GEMINI (CON MANEJO DE ERROR 503) ---
+# --- ANALIZADOR DE IA CON GEMINI ---
 def analizar_ticket_con_ia(imagen_pil):
     api_key = st.secrets.get("GEMINI_API_KEY", "")
     if not api_key:
