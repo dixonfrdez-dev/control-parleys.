@@ -85,7 +85,7 @@ def analizar_ticket_con_ia(imagen_pil):
         
         # Modelo actualizado a gemini-2.0-flash para evitar errores 404
         response = client.models.generate_content(
-            model='gemini-2.0-flash',
+            model='gemini-3.6-flash',
             contents=[imagen_pil, prompt]
         )
         
