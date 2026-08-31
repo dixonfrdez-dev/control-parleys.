@@ -52,24 +52,33 @@ except Exception as e:
     st.error(f"Error de conexión con Google Sheets: {e}")
     st.stop()
 
-# --- FUNCIONES DE BASE DE DATOS ---
-def obtener_usuarios():
-    records = sheet_users.get_all_records()
-    return pd.DataFrame(records)
-
-def registrar_usuario(user, pwd):
-    sheet_users.append_row([str(user).strip(), str(pwd).strip()])
-
+# --- FUNCIONES DE BASE DE DATOS CORREGIDAS ---
 def obtener_parleys():
     records = sheet_parleys.get_all_records()
     df = pd.DataFrame(records)
-    if not df.empty:
-        if "Moneda" not in df.columns:
-            df["Moneda"] = "USD"
-        df["Monto"] = pd.to_numeric(df["Monto"], errors='coerce').fillna(0)
-        df["Cuota"] = pd.to_numeric(df["Cuota"], errors='coerce').fillna(1.0)
-    return df
+    
+    # Si el DataFrame está vacío o le faltan columnas obligatorias, las creamos
+    columnas_requeridas = ["Usuario", "Fecha", "Deporte/Liga", "Seleccion", "Monto", "Cuota", "Estado", "Captura_URL", "Moneda"]
+    
+    if df.empty:
+        return pd.DataFrame(columns=columnas_requeridas)
+        
+    for col in columnas_requeridas:
+        if col not in df.columns:
+            if col == "Moneda":
+                df["Moneda"] = "USD"
+            elif col == "Monto":
+                df["Monto"] = 0.0
+            elif col == "Cuota":
+                df["Cuota"] = 1.00
+            else:
+                df[col] = ""
 
+    # Conversión segura a números
+    df["Monto"] = pd.to_numeric(df["Monto"], errors='coerce').fillna(0.0)
+    df["Cuota"] = pd.to_numeric(df["Cuota"], errors='coerce').fillna(1.00)
+    
+    return df
 def agregar_parley(usuario, fecha, deporte, seleccion, monto, cuota, estado, captura_url="N/A", moneda="USD"):
     # Insertar valores convertidos a cadenas/números limpios
     sheet_parleys.append_row([
