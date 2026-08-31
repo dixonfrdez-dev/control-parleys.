@@ -1,242 +1,291 @@
 import sys
 import os
 from datetime import datetime
-
-# Desactivar aceleraciones de hardware para estabilidad en Windows
-os.environ["NPY_DISABLE_CPU_FEATURES"] = "X86_V2,AVX2,FMA3"
-os.environ["STREAMLIT_WATCH_MODULES"] = "false"
-
 import streamlit as st
+import pandas as pd
 import gspread
+from google.oauth2.service_account import Credentials
+import plotly.express as px
 
-st.set_page_config(page_title="Control de Parleys", layout="wide", page_icon="⚽")
+# --- CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(
+    page_title="Sistema de Control de Parleys",
+    page_icon="⚽",
+    layout="wide"
+)
 
-# Inicializar estados de sesión
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
+# --- CONEXIÓN A GOOGLE SHEETS ---
+@st.cache_resource
+def get_gspread_client():
+    creds_dict = st.secrets["connections"]["gsheets"]
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    client = gspread.authorize(credentials)
+    url = creds_dict["spreadsheet"]
+    sh = client.open_by_url(url)
+    return sh
+
+try:
+    sh = get_gspread_client()
+    try:
+        sheet_users = sh.worksheet("Usuarios")
+    except Exception:
+        sheet_users = sh.add_worksheet(title="Usuarios", rows="100", cols="5")
+        sheet_users.append_row(["usuario", "clave"])
+
+    try:
+        sheet_parleys = sh.worksheet("Parleys")
+    except Exception:
+        sheet_parleys = sh.add_worksheet(title="Parleys", rows="1000", cols="10")
+        sheet_parleys.append_row(["Usuario", "Fecha", "Deporte/Liga", "Seleccion", "Monto", "Cuota", "Estado", "Captura_URL"])
+except Exception as e:
+    st.error(f"Error de conexión con Google Sheets: {e}")
+    st.stop()
+
+# --- FUNCIONES DE BASE DE DATOS ---
+def obtener_usuarios():
+    records = sheet_users.get_all_records()
+    return pd.DataFrame(records)
+
+def registrar_usuario(user, pwd):
+    sheet_users.append_row([user.strip(), pwd.strip()])
+
+def obtener_parleys():
+    records = sheet_parleys.get_all_records()
+    df = pd.DataFrame(records)
+    return df
+
+def agregar_parley(usuario, fecha, deporte, seleccion, monto, cuota, estado, captura_url="N/A"):
+    sheet_parleys.append_row([usuario, str(fecha), deporte, seleccion, float(monto), float(cuota), estado, captura_url])
+
+def actualizar_estado_apuesta(row_index, nuevo_estado):
+    # La columna 7 corresponde a 'Estado' en la pestaña Parleys
+    sheet_parleys.update_cell(row_index, 7, nuevo_estado)
+
+def eliminar_apuesta(row_index):
+    sheet_parleys.delete_rows(row_index)
+
+# --- GESTIÓN DE SESIÓN ---
+if "autenticado" not in st.session_state:
+    st.session_state.autenticado = False
 if "usuario_actual" not in st.session_state:
     st.session_state.usuario_actual = ""
 
-# Conexión nativa a Google Sheets
-@st.cache_resource
-def conectar_gsheets():
-    try:
-        cred_dict = dict(st.secrets["connections"]["gsheets"])
-        if "private_key" in cred_dict:
-            cred_dict["private_key"] = cred_dict["private_key"].replace("\\n", "\n")
-            
-        gc = gspread.service_account_from_dict(cred_dict)
-        sh = gc.open_by_url(cred_dict["spreadsheet"])
-        return sh
-    except Exception as e:
-        st.error(f"Error de conexión con Google Sheets: {e}")
-        return None
+# --- PANTALLA DE LOGIN / REGISTRO ---
+if not st.session_state.autenticado:
+    st.title("⚽ Control de Parleys y Apuestas")
+    tab_login, tab_registro = st.tabs(["🔐 Iniciar Sesión", "📝 Registrarse"])
 
-sh = conectar_gsheets()
+    with tab_login:
+        with st.form("form_login"):
+            u_input = st.text_input("Usuario").strip()
+            p_input = st.text_input("Contraseña", type="password").strip()
+            btn_login = st.form_submit_button("Ingresar")
 
-# Función para obtener o crear una hoja específica
-def obtener_hoja(nombre_hoja, encabezados):
-    if not sh:
-        return None
-    try:
-        sheet = sh.worksheet(nombre_hoja)
-    except gspread.WorksheetNotFound:
-        sheet = sh.add_worksheet(title=nombre_hoja, rows="1000", cols="10")
-        sheet.append_row(encabezados)
-    return sheet
-
-sheet_usuarios = obtener_hoja("Usuarios", ["usuario", "clave"])
-sheet_parleys = obtener_hoja("Parleys", ["usuario", "fecha", "deporte", "descripcion", "monto", "cuota", "estado", "retorno"])
-
-# ==============================================================================
-# PANTALLA PRINCIPAL (SISTEMA DE CONTROL)
-# ==============================================================================
-if st.session_state.logged_in:
-    usuario_actual = st.session_state.usuario_actual
-
-    # Barra lateral
-    st.sidebar.title("⚽ Control de Parleys")
-    st.sidebar.write(f"Usuario: **{usuario_actual}**")
-    
-    opcion_menu = st.sidebar.radio("Navegación", ["📊 Dashboard / Estadísticas", "➕ Registrar Apuesta", "📋 Historial de Jugadas"])
-    
-    if st.sidebar.button("Cerrar Sesión"):
-        st.session_state.logged_in = False
-        st.session_state.usuario_actual = ""
-        st.rerun()
-
-    # Cargar datos del usuario
-    registros_usuario = []
-    if sheet_parleys:
-        try:
-            todas_filas = sheet_parleys.get_all_values()
-            if len(todas_filas) > 1:
-                for fila in todas_filas[1:]:
-                    if len(fila) >= 8 and fila[0].strip() == usuario_actual:
-                        registros_usuario.append({
-                            "fecha": fila[1],
-                            "deporte": fila[2],
-                            "descripcion": fila[3],
-                            "monto": float(fila[4]) if fila[4] else 0.0,
-                            "cuota": float(fila[5]) if fila[5] else 0.0,
-                            "estado": fila[6],
-                            "retorno": float(fila[7]) if fila[7] else 0.0
-                        })
-        except Exception as e:
-            st.error(f"Error al cargar historial: {e}")
-
-    # --- OPCIÓN 1: DASHBOARD DE ESTADÍSTICAS ---
-    if opcion_menu == "📊 Dashboard / Estadísticas":
-        st.title(f"📊 Panel General - {usuario_actual}")
-        
-        total_apuestas = len(registros_usuario)
-        total_invertido = sum(r["monto"] for r in registros_usuario)
-        total_ganado = sum(r["retorno"] for r in registros_usuario if r["estado"] == "Ganado")
-        balance_neto = total_ganado - total_invertido
-        
-        ganadas = len([r for r in registros_usuario if r["estado"] == "Ganado"])
-        perdidas = len([r for r in registros_usuario if r["estado"] == "Perdido"])
-        pendientes = len([r for r in registros_usuario if r["estado"] == "Pendiente"])
-        
-        efectividad = (ganadas / (ganadas + perdidas) * 100) if (ganadas + perdidas) > 0 else 0.0
-
-        # Tarjetas de resumen
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total Invertido", f"${total_invertido:.2f}")
-        col2.metric("Total Retorno", f"${total_ganado:.2f}")
-        col3.metric("Balance Neto", f"${balance_neto:.2f}", delta=f"{balance_neto:.2f}")
-        col4.metric("Efectividad", f"{efectividad:.1f}%")
-
-        st.markdown("---")
-        
-        st.subheader("📈 Resumen de Resultados")
-        c1, c2, c3 = st.columns(3)
-        c1.info(f"🟢 **Ganadas:** {ganadas}")
-        c2.error(f"🔴 **Perdidas:** {perdidas}")
-        c3.warning(f"🟡 **Pendientes:** {pendientes}")
-
-    # --- OPCIÓN 2: REGISTRAR APUESTA ---
-    elif opcion_menu == "➕ Registrar Apuesta":
-        st.title("➕ Registrar Nuevo Parley / Jugada")
-        
-        with st.form("form_parley"):
-            fecha = st.date_input("Fecha de la jugada", datetime.now())
-            deporte = st.selectbox("Deporte / Liga", ["Fútbol", "Béisbol (MLB)", "Baloncesto (NBA)", "NFL", "Tenis", "Otro"])
-            descripcion = st.text_area("Detalle de los logros (Ej: Real Madrid a ganar + Over 2.5 goles)")
-            
-            col_m, col_c, col_e = st.columns(3)
-            monto = col_m.number_input("Monto apostado ($)", min_value=0.5, value=5.0, step=0.5)
-            cuota = col_c.number_input("Cuota / Logro total", min_value=1.01, value=2.00, step=0.1)
-            estado = col_e.selectbox("Estado inicial", ["Pendiente", "Ganado", "Perdido"])
-            
-            retorno_estimado = monto * cuota
-            st.caption(f"💡 **Posible ganancia total:** ${retorno_estimado:.2f}")
-            
-            btn_guardar = st.form_submit_button("Guardar Apuesta")
-            
-            if btn_guardar:
-                if descripcion.strip():
-                    retorno_final = retorno_estimado if estado == "Ganado" else (0.0 if estado == "Perdido" else 0.0)
-                    nueva_fila = [
-                        usuario_actual,
-                        str(fecha),
-                        deporte,
-                        descripcion.strip(),
-                        str(monto),
-                        str(cuota),
-                        estado,
-                        str(retorno_final)
-                    ]
-                    
-                    try:
-                        sheet_parleys.append_row(nueva_fila)
-                        st.success("¡Apuesta registrada con éxito!")
+            if btn_login:
+                df_u = obtener_usuarios()
+                if not df_u.empty and "usuario" in df_u.columns and "clave" in df_u.columns:
+                    user_match = df_u[(df_u["usuario"].astype(str) == u_input) & (df_u["clave"].astype(str) == p_input)]
+                    if not user_match.empty:
+                        st.session_state.autenticado = True
+                        st.session_state.usuario_actual = u_input
+                        st.success("¡Bienvenido!")
                         st.rerun()
-                    except Exception as e:
-                        st.error(f"Error al guardar en Google Sheets: {e}")
+                    else:
+                        st.error("Usuario o contraseña incorrectos.")
                 else:
-                    st.warning("Por favor agrega una descripción o detalle a tu jugada.")
+                    st.error("No hay usuarios registrados aún.")
 
-    # --- OPCIÓN 3: HISTORIAL DE JUGADAS ---
-    elif opcion_menu == "📋 Historial de Jugadas":
-        st.title("📋 Historial de Parleys")
-        
-        if registros_usuario:
-            st.dataframe(registros_usuario, use_container_width=True)
-        else:
-            st.info("Aún no has registrado ninguna jugada. Dirígete a '➕ Registrar Apuesta' para añadir la primera.")
+    with tab_registro:
+        with st.form("form_reg"):
+            nu_input = st.text_input("Nuevo Usuario").strip()
+            np_input = st.text_input("Nueva Contraseña", type="password").strip()
+            btn_reg = st.form_submit_button("Crear cuenta")
 
-# ==============================================================================
-# PANTALLA DE AUTENTICACIÓN (LOGIN Y REGISTRO)
-# ==============================================================================
+            if btn_reg:
+                if nu_input and np_input:
+                    df_u = obtener_usuarios()
+                    if not df_u.empty and "usuario" in df_u.columns and nu_input in df_u["usuario"].astype(str).values:
+                        st.error("El usuario ya existe. Elige otro nombre.")
+                    else:
+                        registrar_usuario(nu_input, np_input)
+                        st.success("¡Cuenta creada con éxito! Ahora inicia sesión.")
+                else:
+                    st.warning("Por favor completa todos los campos.")
+    st.stop()
+
+# --- MENÚ LATERAL (APP AUTENTICADA) ---
+st.sidebar.write(f"👤 **Usuario:** `{st.session_state.usuario_actual}`")
+if st.sidebar.button("Cerrar Sesión"):
+    st.session_state.autenticado = False
+    st.session_state.usuario_actual = ""
+    st.rerun()
+
+opcion_menu = st.sidebar.radio(
+    "Menú de Navegación",
+    ["📊 Dashboard y Gráficos", "➕ Registrar Apuesta", "⚙️ Gestionar Historial"]
+)
+
+# Cargar apuestas globales
+df_raw = obtener_parleys()
+if not df_raw.empty and "Usuario" in df_raw.columns:
+    df_user = df_raw[df_raw["Usuario"].astype(str) == st.session_state.usuario_actual].copy()
 else:
-    st.title("⚽ Control de Parleys")
-    st.subheader("Registro / Inicio de Sesión")
+    df_user = pd.DataFrame(columns=["Usuario", "Fecha", "Deporte/Liga", "Seleccion", "Monto", "Cuota", "Estado", "Captura_URL"])
+
+# --- 1. DASHBOARD Y GRÁFICOS ---
+if opcion_menu == "📊 Dashboard y Gráficos":
+    st.title("📊 Panel Estadístico y Balance")
     
-    tab1, tab2 = st.tabs(["Iniciar Sesión", "Registrarse"])
+    if not df_user.empty:
+        # Métricas principales
+        total_jugadas = len(df_user)
+        df_ganadas = df_user[df_user["Estado"] == "Ganada"]
+        df_perdidas = df_user[df_user["Estado"] == "Perdida"]
+        df_pendientes = df_user[df_user["Estado"] == "Pendiente"]
 
-    # ----------------- TAB 1: INICIAR SESIÓN -----------------
-    with tab1:
-        st.subheader("Login")
-        usuario = st.text_input("Usuario", key="login_user")
-        clave = st.text_input("Contraseña", type="password", key="login_pass")
+        total_apostado = df_user["Monto"].astype(float).sum()
         
-        if st.button("Ingresar"):
-            if usuario and clave:
-                if sheet_usuarios:
-                    try:
-                        filas = sheet_usuarios.get_all_values()
-                        if len(filas) > 1:
-                            usr_input = str(usuario).strip()
-                            pass_input = str(clave).strip()
-                            usuario_encontrado = False
-                            
-                            for fila in filas[1:]:
-                                if len(fila) >= 2:
-                                    if str(fila[0]).strip() == usr_input:
-                                        usuario_encontrado = True
-                                        if str(fila[1]).strip() == pass_input:
-                                            st.session_state.logged_in = True
-                                            st.session_state.usuario_actual = usr_input
-                                            st.rerun()
-                                        else:
-                                            st.error("Contraseña incorrecta.")
-                                        break
-                            if not usuario_encontrado:
-                                st.error("El usuario no existe.")
-                        else:
-                            st.error("La base de datos de usuarios está vacía.")
-                    except Exception as e:
-                        st.error(f"Error al leer la hoja: {e}")
-            else:
-                st.warning("Por favor ingresa usuario y contraseña.")
+        # Lucro cálculo
+        def calc_lucro(row):
+            e = str(row["Estado"]).strip().capitalize()
+            m = float(row.get("Monto", 0))
+            c = float(row.get("Cuota", 1))
+            if e == "Ganada":
+                return (m * c) - m
+            elif e == "Perdida":
+                return -m
+            return 0
 
-    # ----------------- TAB 2: REGISTRO -----------------
-    with tab2:
-        st.subheader("Registro de nuevo usuario")
-        nuevo_usuario = st.text_input("Nuevo Usuario", key="reg_user")
-        nueva_clave = st.text_input("Nueva Contraseña", type="password", key="reg_pass")
+        df_user["Lucro"] = df_user.apply(calc_lucro, axis=1)
+        balance_total = df_user["Lucro"].sum()
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Total Jugadas", total_jugadas)
+        col2.metric("Total Apostado", f"${total_apostado:.2f}")
+        col3.metric("Ganancias / Pérdidas", f"${balance_total:.2f}", delta=f"{balance_total:.2f}")
         
-        if st.button("Crear cuenta"):
-            if nuevo_usuario and nueva_clave:
-                if sheet_usuarios:
-                    try:
-                        filas = sheet_usuarios.get_all_values()
-                        usr_nuevo = str(nuevo_usuario).strip()
-                        pass_nueva = str(nueva_clave).strip()
-                        
-                        registrados = [str(f[0]).strip() for f in filas[1:] if len(f) > 0] if len(filas) > 1 else []
-                        
-                        if usr_nuevo in registrados:
-                            st.warning("El nombre de usuario ya existe.")
-                        else:
-                            sheet_usuarios.append_row([usr_nuevo, pass_nueva])
-                            st.success("¡Cuenta creada exitosamente! Ya puedes iniciar sesión.")
-                    except Exception as e:
-                        st.error(f"Error al registrar: {e}")
+        win_rate = (len(df_ganadas) / total_jugadas * 100) if total_jugadas > 0 else 0
+        col4.metric("% Efectividad", f"{win_rate:.1f}%")
+
+        st.divider()
+
+        # --- SECCIÓN DE GRÁFICOS ---
+        col_g1, col_g2 = st.columns(2)
+
+        with col_g1:
+            df_chart = df_user.copy()
+            df_chart["Acumulado"] = df_chart["Lucro"].cumsum()
+            fig_line = px.line(
+                df_chart,
+                y="Acumulado",
+                markers=True,
+                title="📈 Evolución del Balance ($)",
+                labels={"Acumulado": "Balance Net ($)", "index": "N° de Apuesta"}
+            )
+            fig_line.update_traces(line_color="#00CC96", line_width=3)
+            st.plotly_chart(fig_line, use_container_width=True)
+
+        with col_g2:
+            df_estado = df_user["Estado"].value_counts().reset_index()
+            df_estado.columns = ["Estado", "Cantidad"]
+            fig_pie = px.pie(
+                df_estado,
+                names="Estado",
+                values="Cantidad",
+                title="🍩 Distribución de Resultados",
+                color="Estado",
+                color_discrete_map={"Ganada": "#00CC96", "Perdida": "#EF553B", "Pendiente": "#FECB52"},
+                hole=0.4
+            )
+            st.plotly_chart(fig_pie, use_container_width=True)
+
+        st.subheader("📋 Historial Reciente")
+        st.dataframe(df_user.drop(columns=["Usuario"]), use_container_width=True)
+
+    else:
+        st.info("No tienes apuestas registradas. Ve a '➕ Registrar Apuesta' para comenzar.")
+
+# --- 2. REGISTRAR APUESTA ---
+elif opcion_menu == "➕ Registrar Apuesta":
+    st.title("➕ Nueva Apuesta / Parley")
+    
+    with st.form("form_nueva_apuesta", clear_on_submit=True):
+        col_f1, col_f2 = st.columns(2)
+        
+        with col_f1:
+            fecha = st.date_input("Fecha de la Jugada", datetime.now())
+            deporte = st.text_input("Deporte / Liga", placeholder="Ej. MLB, Champions League, NBA")
+            seleccion = st.text_area("Selección / Logros", placeholder="Ej. Real Madrid Gana + Yankees ML")
+        
+        with col_f2:
+            monto = st.number_input("Monto Apostado ($)", min_value=0.5, step=1.0, value=10.0)
+            cuota = st.number_input("Cuota / Logro Total", min_value=1.01, step=0.05, value=2.00)
+            estado = st.selectbox("Estado Inicial", ["Pendiente", "Ganada", "Perdida"])
+            captura_file = st.file_uploader("Adjuntar Captura de Pantalla (Opcional)", type=["png", "jpg", "jpeg"])
+
+        btn_guardar = st.form_submit_button("💾 Guardar Apuesta")
+
+        if btn_guardar:
+            if deporte and seleccion:
+                captura_url = "N/A"
+                if captura_file is not None:
+                    captura_url = f"Imagen: {captura_file.name}"
+                
+                agregar_parley(
+                    st.session_state.usuario_actual,
+                    fecha,
+                    deporte,
+                    seleccion,
+                    monto,
+                    cuota,
+                    estado,
+                    captura_url
+                )
+                st.success("¡Apuesta registrada exitosamente en Google Sheets!")
             else:
-                st.warning("Por favor completa todos los campos.")
+                st.warning("Por favor completa el deporte y los logros de la jugada.")
 
+# --- 3. GESTIONAR HISTORIAL (EDITAR / ELIMINAR) ---
+elif opcion_menu == "⚙️ Gestionar Historial":
+    st.title("⚙️ Editar o Eliminar Apuestas")
 
+    if not df_user.empty:
+        # Obtenemos los índices reales de las filas correspondientes al usuario en Google Sheets
+        df_raw_reset = df_raw.reset_index()
+        df_user_indexed = df_raw_reset[df_raw_reset["Usuario"].astype(str) == st.session_state.usuario_actual]
+
+        opciones = {}
+        for idx, row in df_user_indexed.iterrows():
+            # Fila real en Google Sheets: index original + 2 (por los encabezados y 1-based index)
+            sheet_row_num = int(row["index"]) + 2
+            label = f"Fila #{sheet_row_num} | {row.get('Fecha')} - {row.get('Deporte/Liga')} ({row.get('Monto')}$) [{row.get('Estado')}]"
+            opciones[label] = sheet_row_num
+
+        apuesta_sel = st.selectbox("Selecciona la apuesta a modificar:", options=list(opciones.keys()))
+        row_target = opciones[apuesta_sel]
+
+        col_act1, col_act2 = st.columns(2)
+
+        with col_act1:
+            st.subheader("✏️ Actualizar Estado")
+            nuevo_est = st.radio("Nuevo Estado:", ["Ganada", "Perdida", "Pendiente"])
+            if st.button("Guardar Nuevo Estado"):
+                actualizar_estado_apuesta(row_target, nuevo_est)
+                st.success("Estado actualizado.")
+                st.rerun()
+
+        with col_act2:
+            st.subheader("🗑️ Eliminar Apuesta")
+            st.write("Esta acción borrará el registro de tu hoja de cálculo.")
+            if st.button("🔴 Eliminar Definitivamente"):
+                eliminar_apuesta(row_target)
+                st.success("Apuesta eliminada.")
+                st.rerun()
+    else:
+        st.info("No tienes apuestas en el historial para modificar.")
      
                
