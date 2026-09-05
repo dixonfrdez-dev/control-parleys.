@@ -92,6 +92,9 @@ def obtener_parleys():
 
     df["Monto"] = pd.to_numeric(df["Monto"], errors='coerce').fillna(0.0)
     df["Cuota"] = pd.to_numeric(df["Cuota"], errors='coerce').fillna(1.00)
+    df["Moneda"] = df["Moneda"].astype(str).str.strip().str.upper()
+    df["Moneda"] = df["Moneda"].replace(["BS", "BS.", "VES"], "VES")
+    df["Moneda"] = df["Moneda"].replace(["$", "USD"], "USD")
     
     return df
 
@@ -221,9 +224,6 @@ opcion_menu = st.sidebar.radio(
 df_raw = obtener_parleys()
 if not df_raw.empty and "Usuario" in df_raw.columns:
     df_user = df_raw[df_raw["Usuario"].astype(str) == st.session_state.usuario_actual].copy()
-    if "Moneda" not in df_user.columns:
-        df_user["Moneda"] = "USD"
-    df_user["Moneda"] = df_user["Moneda"].replace("", "USD").fillna("USD")
 else:
     df_user = pd.DataFrame(columns=["Usuario", "Fecha", "Deporte/Liga", "Seleccion", "Monto", "Cuota", "Estado", "Captura_URL", "Moneda"])
 
@@ -235,7 +235,11 @@ if opcion_menu == "📊 Dashboard y Gráficos":
     moneda_code = "USD" if "USD" in moneda_filtro else "VES"
     simbolo = "$" if moneda_code == "USD" else "Bs"
 
-    df_filtered = df_user[df_user["Moneda"] == moneda_code].copy() if not df_user.empty else pd.DataFrame()
+    # Filtrar estrictamente por la moneda seleccionada
+    if not df_user.empty:
+        df_filtered = df_user[df_user["Moneda"] == moneda_code].copy()
+    else:
+        df_filtered = pd.DataFrame()
 
     if not df_filtered.empty:
         total_jugadas = len(df_filtered)
@@ -269,7 +273,14 @@ if opcion_menu == "📊 Dashboard y Gráficos":
         with col_g1:
             df_chart = df_filtered.copy()
             df_chart["Acumulado"] = df_chart["Lucro"].cumsum()
-            fig_line = px.line(df_chart, y="Acumulado", markers=True, title=f"📈 Evolución del Balance ({simbolo})", template="plotly_dark")
+            fig_line = px.line(
+                df_chart, 
+                y="Acumulado", 
+                markers=True, 
+                title=f"📈 Evolución del Balance ({simbolo})", 
+                template="plotly_dark",
+                labels={"Acumulado": f"Balance ({simbolo})", "index": "Nº Apuesta"}
+            )
             fig_line.update_traces(line_color="#00CC96", line_width=3)
             st.plotly_chart(fig_line, use_container_width=True)
 
@@ -321,7 +332,13 @@ elif opcion_menu == "➕ Registrar Apuesta":
                         st.session_state.input_monto = float(datos.get("monto", 10.0))
                         st.session_state.input_cuota = float(datos.get("cuota", 2.00))
                         st.session_state.input_estado = datos.get("estado", "Pendiente")
-                        st.session_state.input_moneda = str(datos.get("moneda", "USD")).upper()
+                        
+                        m_extracted = str(datos.get("moneda", "USD")).upper()
+                        if "BS" in m_extracted or "VES" in m_extracted:
+                            st.session_state.input_moneda = "VES"
+                        else:
+                            st.session_state.input_moneda = "USD"
+                            
                         st.success("¡Datos extraídos! Verifica los campos abajo.")
                         st.rerun()
 
@@ -387,7 +404,7 @@ elif opcion_menu == "⚙️ Gestionar Historial":
         opciones = {}
         for idx, row in df_user_hist.iterrows():
             sheet_row_num = int(row["index"]) + 2
-            mon_sym = "Bs" if str(row.get('Moneda', 'USD')) == "VES" else "$"
+            mon_sym = "Bs" if str(row.get('Moneda', 'USD')).upper() == "VES" else "$"
             label = f"Fila #{sheet_row_num} | {row.get('Fecha')} - {row.get('Deporte/Liga')} ({mon_sym}{row.get('Monto')}) [{row.get('Estado')}]"
             opciones[label] = sheet_row_num
 
