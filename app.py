@@ -428,3 +428,22 @@ elif opcion_menu == "⚙️ Gestionar Historial":
                 st.rerun()
     else:
         st.info("No tienes apuestas en el historial para modificar.")
+
+# --- MANTENER APP DESPIERTA ---
+import urllib.request
+import threading
+import time
+
+def keep_alive():
+    while True:
+        try:
+            # Reemplaza con la URL exacta de tu app en Streamlit Cloud
+            urllib.request.urlopen("https://control-parleys-nbrbdefgh3tfmy3fen.streamlit.app/")
+        except Exception:
+            pass
+        time.sleep(240)  # Cada 4 minutos
+
+# Iniciar hilo secundario para el ping
+if "ping_thread" not in st.session_state:
+    st.session_state.ping_thread = True
+    threading.Thread(target=keep_alive, daemon=True).start()
